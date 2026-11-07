@@ -43,6 +43,9 @@ const MAX_CHAT_HISTORY = 200;
 // Dominios bloqueados en la sesión actual del maestro (refleja el archivo hosts).
 const blockedDomains = new Set();
 
+// Tamaño de fragmento para la transferencia de archivos por streaming (64 KB).
+const FILE_CHUNK_SIZE = 64 * 1024;
+
 // ---------------------------------------------------------------------------
 // Utilidades
 // ---------------------------------------------------------------------------
@@ -257,11 +260,12 @@ function connectToMaster(masterIp, masterPort) {
     pushToRenderer('dns-command-result', { ...command, ...result });
   });
 
-  studentSocket.on('webrtc-signal', (data) => {
-    pushToRenderer('webrtc-signal', {
-      fromSocketId: data.fromSocketId,
-      signal: data.signal
-    });
+  studentSocket.on('live-watch-start', () => {
+    pushToRenderer('live-watch-start', {});
+  });
+
+  studentSocket.on('live-watch-stop', () => {
+    pushToRenderer('live-watch-stop', {});
   });
 
   studentSocket.on('file-command', async (data) => {
@@ -303,6 +307,12 @@ async function handleIncomingFileCommand(data) {
     return;
   }
 
+  // Descarga con streaming por fragmentos (no bloquea el event loop).
+  if (data.action === 'download') {
+    await handleFileDownload(data.requestId, data.path);
+    return;
+  }
+
   const response = {
     requestId: data.requestId,
     action: data.action,
@@ -337,16 +347,6 @@ async function handleIncomingFileCommand(data) {
       }
       await fs.promises.writeFile(resolveStudentPath(data.path), data.content || '', 'utf8');
       response.result = 'ok';
-    } else if (data.action === 'download') {
-      if (!data.path) {
-        throw new Error('Ruta de archivo no especificada.');
-      }
-      const filePath = resolveStudentPath(data.path);
-      const buffer = await fs.promises.readFile(filePath);
-      response.result = {
-        filename: path.basename(filePath),
-        data: buffer.toString('base64')
-      };
     } else if (data.action === 'upload') {
       if (!data.filename) {
         throw new Error('Nombre de archivo no especificado.');
@@ -365,6 +365,90 @@ async function handleIncomingFileCommand(data) {
 
   if (studentSocket && studentSocket.connected) {
     studentSocket.emit('file-response', response);
+  }
+}
+
+/**
+ * Descarga un archivo del estudiante por streaming, enviando fragmentos
+ * (chunks) separados en lugar de un único buffer completo, para no bloquear
+ * el event loop de Socket.io ni provocar timeouts.
+ */
+async function handleFileDownload(requestId, userPath) {
+  const sendError = (error) => {
+    if (studentSocket && studentSocket.connected) {
+      studentSocket.emit('file-response', {
+        requestId,
+        action: 'download',
+        targetSocketId: 'teacher',
+        error
+      });
+    }
+  };
+
+  if (!userPath) {
+    sendError('Ruta de archivo no especificada.');
+    return;
+  }
+
+  const filePath = resolveStudentPath(userPath);
+
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (!stat.isFile()) {
+      sendError('La ruta no es un archivo.');
+      return;
+    }
+
+    const filename = path.basename(filePath);
+    const totalChunks = Math.max(1, Math.ceil(stat.size / FILE_CHUNK_SIZE));
+
+    // Metadatos primero (sin contenido).
+    if (studentSocket && studentSocket.connected) {
+      studentSocket.emit('file-response', {
+        requestId,
+        action: 'download',
+        targetSocketId: 'teacher',
+        result: { filename, size: stat.size, chunked: true, totalChunks }
+      });
+    }
+
+    // Streaming por fragmentos de FILE_CHUNK_SIZE bytes.
+    let index = 0;
+    const readStream = fs.createReadStream(filePath, { highWaterMark: FILE_CHUNK_SIZE });
+
+    readStream.on('data', (chunk) => {
+      if (studentSocket && studentSocket.connected) {
+        studentSocket.emit('file-chunk', {
+          requestId,
+          index,
+          data: chunk.toString('base64')
+        });
+        index += 1;
+      }
+    });
+
+    readStream.on('end', () => {
+      if (studentSocket && studentSocket.connected) {
+        studentSocket.emit('file-chunk-end', {
+          requestId,
+          filename,
+          totalChunks: index
+        });
+      }
+    });
+
+    readStream.on('error', (err) => {
+      if (studentSocket && studentSocket.connected) {
+        studentSocket.emit('file-chunk-end', {
+          requestId,
+          filename,
+          totalChunks: index,
+          error: err.message
+        });
+      }
+    });
+  } catch (err) {
+    sendError(err.message);
   }
 }
 
@@ -510,14 +594,17 @@ function startTeacherMode() {
   masterServer.on('screen-frame', (frame) => {
     pushToRenderer('screen-frame-update', frame);
   });
-  masterServer.on('webrtc-signal', (signal) => {
-    pushToRenderer('webrtc-signal', {
-      fromSocketId: signal.fromSocketId,
-      signal: signal.signal
-    });
+  masterServer.on('student-live-frame', (frame) => {
+    pushToRenderer('student-live-frame', frame);
   });
   masterServer.on('file-response', (response) => {
     pushToRenderer('file-response', response);
+  });
+  masterServer.on('file-chunk', (chunk) => {
+    pushToRenderer('file-chunk', chunk);
+  });
+  masterServer.on('file-chunk-end', (end) => {
+    pushToRenderer('file-chunk-end', end);
   });
   masterServer.on('screen-capture-error', (payload) => {
     pushToRenderer('screen-capture-error', payload);
@@ -662,33 +749,28 @@ function registerIpcHandlers() {
     }
   });
 
-  // ---------- Streaming WebRTC ----------
-  ipcMain.handle('send-webrtc-signal', (event, payload) => {
-    const targetSocketId = payload?.targetSocketId;
-    const signal = payload?.signal;
-
-    if (!targetSocketId || signal === undefined) {
-      return { success: false, error: 'Señal incompleta.' };
-    }
-
-    if (role === 'teacher' && masterServer) {
-      // El maestro envía su señal a un estudiante concreto.
-      masterServer.io.to(targetSocketId).emit('webrtc-signal', {
-        fromSocketId: 'teacher',
-        signal
-      });
+  // ---------- Transmisión en vivo por fotogramas (reusa la captura de fondo) ----------
+  ipcMain.handle('start-live-watch', (event, targetSocketId) => {
+    if (role === 'teacher' && masterServer && targetSocketId) {
+      masterServer.io.to(targetSocketId).emit('live-watch-start');
       return { success: true };
     }
+    return { success: false, error: 'No hay conexión activa.' };
+  });
 
+  ipcMain.handle('stop-live-watch', (event, targetSocketId) => {
+    if (role === 'teacher' && masterServer && targetSocketId) {
+      masterServer.io.to(targetSocketId).emit('live-watch-stop');
+      return { success: true };
+    }
+    return { success: false, error: 'No hay conexión activa.' };
+  });
+
+  ipcMain.handle('send-live-frame', (event, dataUrl) => {
     if (role === 'student' && studentSocket && studentSocket.connected) {
-      // El estudiante responde su señal al maestro (id virtual 'teacher').
-      studentSocket.emit('webrtc-signal', {
-        targetSocketId: 'teacher',
-        signal
-      });
+      studentSocket.emit('student-live-frame', { dataUrl: String(dataUrl || '') });
       return { success: true };
     }
-
     return { success: false, error: 'No hay conexión activa.' };
   });
 

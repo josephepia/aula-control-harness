@@ -17,9 +17,11 @@ const { MASTER_PORT, getLocalIPv4Addresses } = require('./radar');
  *   - 'student-list'      (array completo de estudiantes)
  *   - 'chat-message'      (mensaje de chat)
  *   - 'screen-frame'      (miniatura de pantalla de un estudiante)
- *   - 'webrtc-signal'     (señal WebRTC dirigida al Maestro)
+ *   - 'student-live-frame' (fotograma en vivo de un estudiante, alta frecuencia)
  *   - 'file-command'      (comando de gestor de archivos del Maestro)
  *   - 'file-response'     (respuesta de un estudiante al Maestro)
+ *   - 'file-chunk'        (fragmento de descarga de un archivo)
+ *   - 'file-chunk-end'    (fin de la descarga por fragmentos)
  *   - 'screen-capture-error' (error de captura de pantalla de un estudiante)
  */
 class MasterServer extends EventEmitter {
@@ -31,7 +33,10 @@ class MasterServer extends EventEmitter {
     this.app = express();
     this.httpServer = http.createServer(this.app);
     this.io = new Server(this.httpServer, {
-      cors: { origin: '*' }
+      cors: { origin: '*' },
+      pingTimeout: 30000,
+      pingInterval: 25000,
+      maxHttpBufferSize: 50 * 1024 * 1024
     });
 
     // Map reactivo en memoria: clave socket.id -> datos del estudiante.
@@ -135,20 +140,12 @@ class MasterServer extends EventEmitter {
         }
       });
 
-      // ---------- Señalización WebRTC (streaming en tiempo real) ----------
-      socket.on('webrtc-signal', (data = {}) => {
-        // El id virtual 'teacher' representa al proceso Maestro local.
-        if (data.targetSocketId === 'teacher') {
-          this.emit('webrtc-signal', {
-            fromSocketId: socket.id,
-            signal: data.signal
-          });
-        } else if (data.targetSocketId) {
-          this.io.to(data.targetSocketId).emit('webrtc-signal', {
-            fromSocketId: socket.id,
-            signal: data.signal
-          });
-        }
+      // ---------- Fotograma en vivo (estudiante -> Maestro, alta frecuencia) ----------
+      socket.on('student-live-frame', (data = {}) => {
+        this.emit('student-live-frame', {
+          socketId: socket.id,
+          dataUrl: data.dataUrl || null
+        });
       });
 
       // ---------- Gestor de archivos: comando del Maestro a un estudiante ----------
@@ -177,6 +174,27 @@ class MasterServer extends EventEmitter {
             error: data.error
           });
         }
+      });
+
+      // ---------- Gestor de archivos: fragmento de descarga (streaming) ----------
+      socket.on('file-chunk', (data = {}) => {
+        this.emit('file-chunk', {
+          studentSocketId: socket.id,
+          requestId: data.requestId,
+          index: data.index,
+          data: data.data
+        });
+      });
+
+      // ---------- Gestor de archivos: fin de descarga por fragmentos ----------
+      socket.on('file-chunk-end', (data = {}) => {
+        this.emit('file-chunk-end', {
+          studentSocketId: socket.id,
+          requestId: data.requestId,
+          filename: data.filename,
+          totalChunks: data.totalChunks,
+          error: data.error
+        });
       });
 
       // ---------- Error de captura de pantalla (estudiante -> Maestro) ----------

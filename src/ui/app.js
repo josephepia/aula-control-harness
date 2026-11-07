@@ -24,12 +24,11 @@
   let broadcastSelectedPaths = [];
   let activeTeacherTab = 'students';
 
-  // Streaming WebRTC
-  const livePeers = new Map(); // Maestro: studentSocketId -> RTCPeerConnection
-  let studentPc = null;        // Estudiante: conexión WebRTC hacia el maestro
-  let studentStream = null;    // Estudiante: flujo de pantalla compartida
+  // Transmisión en vivo por fotogramas (reusa la captura de fondo)
+  let currentLiveStudent = null; // Maestro: estudiante en visualización
+  let liveFrameTimer = null;     // Estudiante: bucle de envío de fotogramas
 
-  // Captura de fondo (miniaturas por canvas/JPEG + reuso en WebRTC)
+  // Captura de fondo (miniaturas + en vivo por canvas/JPEG)
   let backgroundStream = null;
   let thumbnailTimer = null;
   let thumbnailVideo = null;
@@ -42,6 +41,7 @@
     currentFile: null
   };
   const pendingFileRequests = new Map();
+  const pendingDownloads = new Map();
 
   // ---------------------------------------------------------------------------
   // Referencias al DOM
@@ -105,7 +105,7 @@
   const btnSubmitLogin = $('btn-submit-login');
 
   const liveModal = $('live-modal');
-  const liveVideo = $('live-video');
+  const liveImage = $('live-image');
   const liveTitle = $('live-title');
   const liveStatus = $('live-status');
   const btnCloseLive = $('btn-close-live');
@@ -222,7 +222,7 @@
     btnOpenLogin.classList.remove('hidden');
     btnLogout.classList.add('hidden');
     closeLiveView();
-    stopStudentShare();
+    stopLiveFrameLoop();
     stopBackgroundCapture();
   }
 
@@ -234,7 +234,7 @@
     teacherView.classList.remove('hidden');
     btnOpenLogin.classList.add('hidden');
     btnLogout.classList.remove('hidden');
-    stopStudentShare();
+    stopLiveFrameLoop();
     stopBackgroundCapture();
     switchTeacherTab('students');
     refreshStudentList();
@@ -366,51 +366,23 @@
   }
 
   // ---------------------------------------------------------------------------
-  // WebRTC: maestro inicia la visualización en vivo (modal flotante amplio)
+  // Transmisión en vivo: maestro visualiza fotogramas del estudiante (modal)
+  // Reutiliza la captura de fondo del estudiante en lugar de abrir una segunda
+  // fuente de video (evita pantallas negras y nuevas ventanas sin permisos).
   // ---------------------------------------------------------------------------
   async function startLiveView(student) {
     closeLiveView();
-
-    const socketId = student.socketId;
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-    livePeers.set(socketId, pc);
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        api.sendWebrtcSignal(socketId, { candidate: event.candidate });
-      }
-    };
-
-    pc.ontrack = (event) => {
-      liveVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
-      liveStatus.classList.add('hidden');
-    };
-
-    pc.onconnectionstatechange = () => {
-      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-        closeLiveView();
-      }
-    };
-
-    try {
-      const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false });
-      await pc.setLocalDescription(offer);
-      await api.sendWebrtcSignal(socketId, { sdp: offer });
-      showLiveModal(student.hostname);
-    } catch (err) {
-      console.error('[ui] Error al iniciar la visualización:', err);
-      closeLiveView();
-    }
+    currentLiveStudent = student;
+    showLiveModal(student.hostname);
+    await api.startLiveWatch(student.socketId);
   }
 
   function closeLiveView() {
-    for (const pc of livePeers.values()) {
-      try { pc.close(); } catch (err) { /* ignore */ }
+    if (currentLiveStudent) {
+      api.stopLiveWatch(currentLiveStudent.socketId);
+      currentLiveStudent = null;
     }
-    livePeers.clear();
-    liveVideo.srcObject = null;
+    liveImage.removeAttribute('src');
     liveModal.classList.add('hidden');
   }
 
@@ -419,7 +391,7 @@
     liveStatus.textContent = 'Solicitando pantalla del estudiante…';
     liveStatus.classList.remove('error-text');
     liveStatus.classList.remove('hidden');
-    liveVideo.srcObject = null;
+    liveImage.removeAttribute('src');
     liveModal.classList.remove('hidden');
   }
 
@@ -493,7 +465,7 @@
   function startThumbnailLoop() {
     stopThumbnailLoop();
     thumbnailTimer = setInterval(() => {
-      const frame = captureThumbnailFrame();
+      const frame = captureFrame(320, 0.6);
       if (frame) {
         api.sendThumbnailFrame(frame);
       }
@@ -507,21 +479,22 @@
     }
   }
 
-  function captureThumbnailFrame() {
+  function captureFrame(maxWidth, quality) {
     if (!thumbnailVideo || !thumbnailVideo.videoWidth) {
       return null;
     }
-    const scale = Math.min(1, 320 / thumbnailVideo.videoWidth);
+    const scale = Math.min(1, maxWidth / thumbnailVideo.videoWidth);
     const width = Math.max(1, Math.round(thumbnailVideo.videoWidth * scale));
     const height = Math.max(1, Math.round(thumbnailVideo.videoHeight * scale));
     thumbnailCanvas.width = width;
     thumbnailCanvas.height = height;
     thumbnailCanvas.getContext('2d').drawImage(thumbnailVideo, 0, 0, width, height);
-    return thumbnailCanvas.toDataURL('image/jpeg', 0.6);
+    return thumbnailCanvas.toDataURL('image/jpeg', quality);
   }
 
   function stopBackgroundCapture() {
     stopThumbnailLoop();
+    stopLiveFrameLoop();
     if (backgroundStream) {
       for (const track of backgroundStream.getTracks()) {
         track.stop();
@@ -533,10 +506,8 @@
     }
   }
 
-  async function startStudentShare(offerSdp) {
-    await stopStudentShare();
-
-    // Reutiliza la captura de fondo (miniaturas) si existe; si no, la crea.
+  // --- Bucle de fotogramas en vivo (alta frecuencia, ~30 ms) ---
+  async function startLiveFrameLoop() {
     if (!backgroundStream) {
       await startBackgroundCapture();
     }
@@ -545,47 +516,22 @@
       return;
     }
 
-    const stream = backgroundStream;
-    studentStream = stream;
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-    studentPc = pc;
-
-    for (const track of stream.getTracks()) {
-      pc.addTrack(track, stream);
-    }
-
-    pc.onicecandidate = (event) => {
-      if (event.candidate) {
-        api.sendWebrtcSignal('teacher', { candidate: event.candidate });
+    stopLiveFrameLoop();
+    liveFrameTimer = setInterval(() => {
+      const frame = captureFrame(640, 0.5);
+      if (frame) {
+        api.sendLiveFrame(frame);
       }
-    };
+    }, 30);
 
-    pc.onconnectionstatechange = () => {
-      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
-        stopStudentShare();
-      }
-    };
-
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      await api.sendWebrtcSignal('teacher', { sdp: answer });
-      sharingBanner.classList.remove('hidden');
-    } catch (err) {
-      console.error('[ui] Error al compartir pantalla:', err);
-      await stopStudentShare();
-    }
+    sharingBanner.classList.remove('hidden');
   }
 
-  function stopStudentShare() {
-    if (studentPc) {
-      try { studentPc.close(); } catch (err) { /* ignore */ }
-      studentPc = null;
+  function stopLiveFrameLoop() {
+    if (liveFrameTimer) {
+      clearInterval(liveFrameTimer);
+      liveFrameTimer = null;
     }
-    studentStream = null; // No detiene tracks: pertenecen a la captura de fondo.
     sharingBanner.classList.add('hidden');
   }
 
@@ -772,18 +718,43 @@
       return;
     }
 
-    const response = await waitForFileResponse(result.requestId);
-    if (response.error) {
-      setFilesStatus(response.error, true);
+    const meta = await waitForFileResponse(result.requestId);
+    if (meta.error) {
+      setFilesStatus(meta.error, true);
       return;
     }
 
-    const saved = await api.saveToDownloads(response.result.filename, response.result.data);
+    const { filename, chunked, totalChunks, data } = meta.result || {};
+
+    let base64;
+    if (chunked) {
+      const assembled = await collectFileChunks(result.requestId, totalChunks);
+      if (assembled.error) {
+        setFilesStatus(assembled.error, true);
+        return;
+      }
+      base64 = assembled.chunks.join('');
+    } else {
+      base64 = data || '';
+    }
+
+    const saved = await api.saveToDownloads(filename, base64);
     if (saved && saved.success) {
       setFilesStatus(`Descargado en ${saved.path}`, false);
     } else {
       setFilesStatus(saved && saved.error ? saved.error : 'Error al guardar la descarga.', true);
     }
+  }
+
+  function collectFileChunks(requestId, totalChunks) {
+    return new Promise((resolve) => {
+      const entry = { chunks: new Array(totalChunks), resolve };
+      entry.timer = setTimeout(() => {
+        pendingDownloads.delete(requestId);
+        resolve({ error: 'Tiempo de espera agotado durante la descarga.' });
+      }, 60000);
+      pendingDownloads.set(requestId, entry);
+    });
   }
 
   function readFileAsBase64(file) {
@@ -947,27 +918,18 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Enrutado de señales WebRTC entrantes
+  // Fotogramas en vivo recibidos del estudiante
   // ---------------------------------------------------------------------------
-  function handleWebrtcSignal(fromSocketId, signal) {
-    if (state.role === 'teacher') {
-      const pc = livePeers.get(fromSocketId);
-      if (!pc) return;
-      if (signal.sdp) {
-        pc.setRemoteDescription(new RTCSessionDescription(signal.sdp)).catch((err) => {
-          console.error('[ui] Error SDP (maestro):', err);
-        });
-      } else if (signal.candidate) {
-        pc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch((err) => {
-          console.error('[ui] Error ICE (maestro):', err);
-        });
-      }
-    } else if (state.role === 'student') {
-      if (signal.sdp && signal.sdp.type === 'offer') {
-        startStudentShare(signal.sdp);
-      } else if (signal.candidate && studentPc) {
-        studentPc.addIceCandidate(new RTCIceCandidate(signal.candidate)).catch(() => {});
-      }
+  function handleLiveFrame(socketId, dataUrl) {
+    if (state.role !== 'teacher' || !currentLiveStudent) {
+      return;
+    }
+    if (socketId !== currentLiveStudent.socketId) {
+      return;
+    }
+    if (dataUrl) {
+      liveImage.src = dataUrl;
+      liveStatus.classList.add('hidden');
     }
   }
 
@@ -995,8 +957,20 @@
       updateThumbnail(frame.socketId, frame.dataUrl);
     });
 
-    api.on('webrtc-signal', (payload) => {
-      handleWebrtcSignal(payload.fromSocketId, payload.signal);
+    api.on('student-live-frame', (frame) => {
+      handleLiveFrame(frame.socketId, frame.dataUrl);
+    });
+
+    api.on('live-watch-start', () => {
+      if (state.role === 'student') {
+        startLiveFrameLoop();
+      }
+    });
+
+    api.on('live-watch-stop', () => {
+      if (state.role === 'student') {
+        stopLiveFrameLoop();
+      }
     });
 
     api.on('file-response', (response) => {
@@ -1004,6 +978,26 @@
       if (resolver) {
         pendingFileRequests.delete(response.requestId);
         resolver(response);
+      }
+    });
+
+    api.on('file-chunk', (chunk) => {
+      const entry = pendingDownloads.get(chunk.requestId);
+      if (entry) {
+        entry.chunks[chunk.index] = chunk.data;
+      }
+    });
+
+    api.on('file-chunk-end', (end) => {
+      const entry = pendingDownloads.get(end.requestId);
+      if (entry) {
+        clearTimeout(entry.timer);
+        pendingDownloads.delete(end.requestId);
+        if (end.error) {
+          entry.resolve({ error: end.error });
+        } else {
+          entry.resolve({ chunks: entry.chunks });
+        }
       }
     });
 
@@ -1056,7 +1050,7 @@
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChatFrom(chatInput);
     });
-    btnStopShare.addEventListener('click', stopStudentShare);
+    btnStopShare.addEventListener('click', stopLiveFrameLoop);
 
     // Maestro
     btnRefreshList.addEventListener('click', refreshStudentList);

@@ -679,7 +679,7 @@ textarea:focus {
   gap: 10px;
 }
 
-#live-video {
+#live-image {
   width: 100%;
   max-height: 68vh;
   min-height: 320px;
