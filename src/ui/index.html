@@ -34,9 +34,8 @@
         <button id="btn-raise-hand" class="btn btn-hand">✋ Alzar la mano</button>
       </div>
 
-      <div id="sharing-banner" class="banner hidden">
-        📡 Compartiendo pantalla en vivo con el maestro…
-        <button id="btn-stop-share" class="btn btn-danger btn-sm">Detener</button>
+      <div id="screen-share-badge" class="screen-share-badge hidden">
+        🔴 Supervisión de Pantalla Activa
       </div>
 
       <div id="broadcast-notice" class="banner hidden">
@@ -138,6 +137,7 @@
               <input id="dns-input" type="text" placeholder="Agregar dominio (ej. facebook.com)" autocomplete="off" />
               <button id="btn-add-dns" class="btn">Agregar</button>
             </div>
+            <button id="btn-reapply-dns" class="btn btn-secondary" style="margin-top: 12px;">🔄 Re-aplicar DNS en Equipos</button>
             <div id="dns-chips" class="dns-chips"></div>
             <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
           </div>

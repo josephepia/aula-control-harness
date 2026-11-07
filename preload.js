@@ -5,7 +5,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
  * Expone una API acotada `window.aulaControl` sin habilitar Node en el renderer.
  */
 const VALID_EVENT_CHANNELS = new Set([
-  'state-update',
+  'sync-global-state',
   'chat-message',
   'radar-status',
   'student-list-update',
@@ -13,6 +13,7 @@ const VALID_EVENT_CHANNELS = new Set([
   'student-live-frame',
   'live-watch-start',
   'live-watch-stop',
+  'teacher-lower-hand',
   'file-response',
   'file-chunk',
   'file-chunk-end',
@@ -28,10 +29,15 @@ contextBridge.exposeInMainWorld('aulaControl', {
   logout: () => ipcRenderer.invoke('logout'),
   sendChat: (text) => ipcRenderer.invoke('send-chat', text),
   raiseHand: (raised) => ipcRenderer.invoke('raise-hand', raised),
+  lowerHand: (studentSocketId) => ipcRenderer.invoke('lower-hand', studentSocketId),
   requestStudentList: () => ipcRenderer.invoke('request-student-list'),
   getDnsDomains: () => ipcRenderer.invoke('get-dns-state'),
   addDnsDomain: (domain) => ipcRenderer.invoke('add-dns-domain', domain),
   removeDnsDomain: (domain) => ipcRenderer.invoke('remove-dns-domain', domain),
+  reapplyDnsRules: (targetSocketId) => ipcRenderer.invoke('reapply-dns-rules', { targetSocketId }),
+  assignCustomName: (instanceId, customName) =>
+    ipcRenderer.invoke('assign-custom-name', { instanceId, customName }),
+  updateConfig: (cfg) => ipcRenderer.invoke('update-config', cfg),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   reportScreenCaptureError: (reason) => ipcRenderer.invoke('report-screen-capture-error', reason),
   sendThumbnailFrame: (dataUrl) => ipcRenderer.invoke('send-thumbnail-frame', dataUrl),

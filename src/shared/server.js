@@ -1,4 +1,6 @@
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { EventEmitter } = require('events');
 const express = require('express');
 const { Server } = require('socket.io');
@@ -25,10 +27,12 @@ const { MASTER_PORT, getLocalIPv4Addresses } = require('./radar');
  *   - 'screen-capture-error' (error de captura de pantalla de un estudiante)
  */
 class MasterServer extends EventEmitter {
-  constructor({ instanceId, port = MASTER_PORT }) {
+  constructor({ instanceId, port = MASTER_PORT, configStorePath = null }) {
     super();
     this.instanceId = instanceId;
     this.port = port;
+    this.configStorePath = configStorePath;
+    this.config = { blockedDomains: [], deviceAliases: {} };
 
     this.app = express();
     this.httpServer = http.createServer(this.app);
@@ -42,6 +46,7 @@ class MasterServer extends EventEmitter {
     // Map reactivo en memoria: clave socket.id -> datos del estudiante.
     this.connectedStudents = new Map();
 
+    this._loadConfig();
     this._setupRoutes();
     this._setupSockets();
   }
@@ -60,6 +65,95 @@ class MasterServer extends EventEmitter {
     return false;
   }
 
+  // ---------------------------------------------------------------------------
+  // Persistencia y sincronización global de estado (config-store.json)
+  // ---------------------------------------------------------------------------
+  _loadConfig() {
+    if (!this.configStorePath) {
+      return;
+    }
+    try {
+      const raw = fs.readFileSync(this.configStorePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        this.config = {
+          blockedDomains: Array.isArray(parsed.blockedDomains) ? parsed.blockedDomains : [],
+          deviceAliases: (parsed.deviceAliases && typeof parsed.deviceAliases === 'object')
+            ? parsed.deviceAliases
+            : {}
+        };
+      }
+    } catch (err) {
+      // El archivo no existe o es inválido: se conserva la configuración vacía.
+    }
+  }
+
+  _saveConfig() {
+    if (!this.configStorePath) {
+      return;
+    }
+    try {
+      fs.writeFileSync(this.configStorePath, JSON.stringify(this.config, null, 2), 'utf8');
+    } catch (err) {
+      console.error('[server] No se pudo guardar la configuración:', err.message);
+    }
+  }
+
+  /**
+   * Fusiona `partial` en la configuración, la persiste y difunde el estado
+   * completo (`sync-global-state`) a todos los clientes conectados.
+   */
+  updateAndBroadcastState(partial) {
+    if (partial && Array.isArray(partial.blockedDomains)) {
+      this.config.blockedDomains = partial.blockedDomains;
+    }
+    if (partial && partial.deviceAliases && typeof partial.deviceAliases === 'object') {
+      this.config.deviceAliases = { ...this.config.deviceAliases, ...partial.deviceAliases };
+    }
+    this._saveConfig();
+    this.emit('sync-global-state', this.config);
+    this.io.emit('sync-global-state', this.config);
+    return this.config;
+  }
+
+  setBlockedDomains(domains) {
+    return this.updateAndBroadcastState({ blockedDomains: Array.isArray(domains) ? domains : [] });
+  }
+
+  assignCustomName(instanceId, customName) {
+    if (!instanceId) {
+      return this.config;
+    }
+    this.config.deviceAliases[instanceId] = String(customName || '').trim();
+    return this.updateAndBroadcastState({ deviceAliases: this.config.deviceAliases });
+  }
+
+  /**
+   * Emite `sync-dns` a un estudiante concreto o a todos los estudiantes.
+   */
+  syncDns(blockedDomains, targetSocketId) {
+    const payload = { blockedDomains: Array.isArray(blockedDomains) ? blockedDomains : [] };
+    if (targetSocketId) {
+      this.io.to(targetSocketId).emit('sync-dns', payload);
+    } else {
+      this.io.emit('sync-dns', payload);
+    }
+  }
+
+  /**
+   * Baja la mano de un estudiante (el docente lo está atendiendo).
+   */
+  lowerHand(studentSocketId) {
+    const student = this.connectedStudents.get(studentSocketId);
+    if (!student) {
+      return;
+    }
+    student.handRaised = false;
+    this.connectedStudents.set(studentSocketId, student);
+    this.io.to(studentSocketId).emit('teacher-lower-hand', {});
+    this._emitStudentList();
+  }
+
   _setupRoutes() {
     this.app.get('/health', (req, res) => {
       res.json({
@@ -73,6 +167,9 @@ class MasterServer extends EventEmitter {
 
   _setupSockets() {
     this.io.on('connection', (socket) => {
+      // Enviar el estado global al cliente entrante.
+      socket.emit('sync-global-state', this.config);
+
       // ---------- Registro de estudiante ----------
       socket.on('register-student', (data = {}) => {
         const ip = data.ip || socket.handshake.address;
@@ -112,6 +209,21 @@ class MasterServer extends EventEmitter {
           this.connectedStudents.set(socket.id, student);
           this._emitStudentList();
         }
+      });
+
+      // ---------- Asignar alias personalizado a un equipo ----------
+      socket.on('assign-custom-name', (data = {}) => {
+        this.assignCustomName(data.instanceId, data.customName);
+      });
+
+      // ---------- Re-aplicar reglas DNS ----------
+      socket.on('reapply-dns-rules', (data = {}) => {
+        this.syncDns(data.blockedDomains, data.targetSocketId);
+      });
+
+      // ---------- Actualizar configuración global ----------
+      socket.on('update-config', (cfg = {}) => {
+        this.updateAndBroadcastState(cfg);
       });
 
       // ---------- Chat ----------

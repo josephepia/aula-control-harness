@@ -110,44 +110,40 @@ function flushDnsCache() {
   });
 }
 
-async function applyDnsBlock(domain) {
+// Marcas que delimitan el bloque de hosts gestionado por la aplicación.
+const HOSTS_START = '# AULA_CONTROL_START';
+const HOSTS_END = '# AULA_CONTROL_END';
+const HOSTS_BLOCK_REGEX = /# AULA_CONTROL_START[\s\S]*?# AULA_CONTROL_END/g;
+
+/**
+ * Reescribe de forma segura ÚNICAMENTE el bloque de hosts gestionado por la
+ * app (entre # AULA_CONTROL_START y # AULA_CONTROL_END), preservando las
+ * reglas previas del equipo y los loopbacks del sistema.
+ */
+async function syncBlockedDomains(domains) {
+  const filePath = hostsFilePath();
+  const list = Array.isArray(domains) ? domains : [];
   try {
-    const filePath = hostsFilePath();
-    const content = await fs.promises.readFile(filePath, 'utf8');
-    const escaped = domain.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let content = await fs.promises.readFile(filePath, 'utf8');
+    content = content.replace(HOSTS_BLOCK_REGEX, '').trimEnd();
+    content += '\n';
 
-    const alreadyBlocked = content
-      .split('\n')
-      .some((line) => line.includes('127.0.0.1') && line.includes(domain));
-
-    if (alreadyBlocked) {
-      return { success: true, message: `El dominio ${domain} ya estaba bloqueado.` };
+    const entries = [];
+    for (const raw of list) {
+      const domain = normalizeDomain(raw);
+      if (!domain) {
+        continue;
+      }
+      entries.push(`127.0.0.1 ${domain}`);
+      entries.push(`127.0.0.1 www.${domain}`);
     }
 
-    const entry = `127.0.0.1 ${domain}\n`;
-    await fs.promises.appendFile(filePath, entry);
+    content += `${HOSTS_START}\n${entries.join('\n')}\n${HOSTS_END}\n`;
+    await fs.promises.writeFile(filePath, content, 'utf8');
     flushDnsCache();
-    return { success: true, message: `Dominio ${domain} bloqueado.` };
+    return { success: true };
   } catch (err) {
-    return { success: false, error: `No se pudo bloquear ${domain}: ${err.message}` };
-  }
-}
-
-async function removeDnsBlock(domain) {
-  try {
-    const filePath = hostsFilePath();
-    const content = await fs.promises.readFile(filePath, 'utf8');
-
-    const filtered = content
-      .split('\n')
-      .filter((line) => !(line.includes('127.0.0.1') && line.includes(domain)))
-      .join('\n');
-
-    await fs.promises.writeFile(filePath, filtered, 'utf8');
-    flushDnsCache();
-    return { success: true, message: `Bloqueo de ${domain} removido.` };
-  } catch (err) {
-    return { success: false, error: `No se pudo desbloquear ${domain}: ${err.message}` };
+    return { success: false, error: `No se pudo actualizar hosts: ${err.message}` };
   }
 }
 
@@ -168,33 +164,40 @@ function getBlockedDomains() {
 }
 
 /**
- * Bloquea un dominio: lo escribe en hosts, lo registra en memoria y
- * propaga la orden a todos los estudiantes conectados.
+ * Aplica el bloqueo DNS local (segmentado) y sincroniza el estado a los
+ * estudiantes conectados y a los paneles docentes.
  */
-async function addBlockedDomain(domain) {
-  const result = await applyDnsBlock(domain);
-  if (result.success) {
-    blockedDomains.add(domain);
-    if (masterServer) {
-      masterServer.io.emit('execute-dns-command', { action: 'block', domain });
-    }
+async function applyLocalAndBroadcastDns() {
+  await syncBlockedDomains(getBlockedDomains());
+  if (masterServer) {
+    masterServer.setBlockedDomains(getBlockedDomains());
+    masterServer.syncDns(getBlockedDomains());
   }
-  return { ...result, domains: getBlockedDomains() };
 }
 
 /**
- * Desbloquea un dominio: lo quita de hosts, lo elimina de memoria y
- * propaga la orden a todos los estudiantes conectados.
+ * Bloquea un dominio: lo registra en memoria, escribe el hosts local y
+ * propaga la lista completa a todos los estudiantes conectados.
+ */
+async function addBlockedDomain(domain) {
+  const clean = normalizeDomain(domain);
+  if (!clean) {
+    return { success: false, error: 'Dominio no especificado.', domains: getBlockedDomains() };
+  }
+  blockedDomains.add(clean);
+  await applyLocalAndBroadcastDns();
+  return { success: true, message: `Dominio ${clean} bloqueado.`, domains: getBlockedDomains() };
+}
+
+/**
+ * Desbloquea un dominio: lo elimina de memoria, reescribe el hosts local y
+ * propaga la lista completa a todos los estudiantes conectados.
  */
 async function removeBlockedDomain(domain) {
-  const result = await removeDnsBlock(domain);
-  if (result.success) {
-    blockedDomains.delete(domain);
-    if (masterServer) {
-      masterServer.io.emit('execute-dns-command', { action: 'unblock', domain });
-    }
-  }
-  return { ...result, domains: getBlockedDomains() };
+  const clean = normalizeDomain(domain);
+  blockedDomains.delete(clean);
+  await applyLocalAndBroadcastDns();
+  return { success: true, message: `Dominio ${clean} desbloqueado.`, domains: getBlockedDomains() };
 }
 
 // ---------------------------------------------------------------------------
@@ -253,14 +256,19 @@ function connectToMaster(masterIp, masterPort) {
     appendChatMessage(message);
   });
 
-  studentSocket.on('execute-dns-command', async (command) => {
-    if (!command || !command.domain) {
-      return;
+  studentSocket.on('sync-dns', async (data) => {
+    const result = await syncBlockedDomains(data && data.blockedDomains);
+    pushToRenderer('dns-command-result', { ...(data || {}), ...result });
+  });
+
+  studentSocket.on('sync-global-state', async (config) => {
+    if (config && Array.isArray(config.blockedDomains)) {
+      await syncBlockedDomains(config.blockedDomains);
     }
-    const result = command.action === 'unblock'
-      ? await removeDnsBlock(command.domain)
-      : await applyDnsBlock(command.domain);
-    pushToRenderer('dns-command-result', { ...command, ...result });
+  });
+
+  studentSocket.on('teacher-lower-hand', () => {
+    pushToRenderer('teacher-lower-hand', {});
   });
 
   studentSocket.on('live-watch-start', () => {
@@ -594,10 +602,20 @@ function startTeacherMode() {
   connectedMasterUrl = null;
 
   // Iniciar servidor maestro (Express + Socket.io en puerto 3000).
-  masterServer = new MasterServer({ instanceId, port: MASTER_PORT });
+  const configStorePath = path.join(app.getPath('userData'), 'config-store.json');
+  masterServer = new MasterServer({ instanceId, port: MASTER_PORT, configStorePath });
+
+  // Sincronizar el set local de dominios con la configuración persistente cargada.
+  blockedDomains.clear();
+  for (const d of (masterServer.config.blockedDomains || [])) {
+    blockedDomains.add(d);
+  }
 
   masterServer.on('student-list', (list) => {
     pushToRenderer('student-list-update', list);
+  });
+  masterServer.on('sync-global-state', (config) => {
+    pushToRenderer('sync-global-state', config);
   });
   masterServer.on('chat-message', (message) => {
     appendChatMessage(message);
@@ -690,6 +708,42 @@ function registerIpcHandlers() {
       return { success: true };
     }
     return { success: false, error: 'No conectado al maestro.' };
+  });
+
+  ipcMain.handle('lower-hand', (event, studentSocketId) => {
+    if (role === 'teacher' && masterServer) {
+      masterServer.lowerHand(studentSocketId);
+      return { success: true };
+    }
+    return { success: false, error: 'Solo disponible en modo maestro.' };
+  });
+
+  ipcMain.handle('assign-custom-name', (event, payload) => {
+    const instanceId = payload?.instanceId;
+    const customName = payload?.customName;
+    if (role === 'teacher' && masterServer && instanceId) {
+      masterServer.assignCustomName(instanceId, customName);
+      return { success: true };
+    }
+    return { success: false, error: 'Solo disponible en modo maestro.' };
+  });
+
+  ipcMain.handle('reapply-dns-rules', async (event, payload) => {
+    const targetSocketId = payload?.targetSocketId || null;
+    if (role === 'teacher' && masterServer) {
+      await applyLocalAndBroadcastDns();
+      masterServer.syncDns(getBlockedDomains(), targetSocketId);
+      return { success: true, domains: getBlockedDomains() };
+    }
+    return { success: false, error: 'Solo disponible en modo maestro.' };
+  });
+
+  ipcMain.handle('update-config', (event, cfg) => {
+    if (role === 'teacher' && masterServer) {
+      masterServer.updateAndBroadcastState(cfg || {});
+      return { success: true };
+    }
+    return { success: false, error: 'Solo disponible en modo maestro.' };
   });
 
   ipcMain.handle('request-student-list', () => {

@@ -21,6 +21,7 @@
   let handRaised = false;
   let students = [];
   let blockedDomains = [];
+  let deviceAliases = {};
   let broadcastSelectedPaths = [];
   let activeTeacherTab = 'students';
 
@@ -58,8 +59,7 @@
   const radarDot = $('radar-dot');
   const radarText = $('radar-text');
   const btnRaiseHand = $('btn-raise-hand');
-  const sharingBanner = $('sharing-banner');
-  const btnStopShare = $('btn-stop-share');
+  const screenShareBadge = $('screen-share-badge');
   const broadcastNotice = $('broadcast-notice');
   const broadcastNoticeText = $('broadcast-notice-text');
   const chatMessages = $('chat-messages');
@@ -76,6 +76,7 @@
 
   const dnsInput = $('dns-input');
   const btnAddDns = $('btn-add-dns');
+  const btnReapplyDns = $('btn-reapply-dns');
   const dnsChips = $('dns-chips');
   const dnsEmpty = $('dns-empty');
   const dnsFeedback = $('dns-feedback');
@@ -256,10 +257,18 @@
     }
   }
 
+  function resolveStudentName(student) {
+    const alias = student.instanceId ? String(deviceAliases[student.instanceId] || '').trim() : '';
+    return alias || student.hostname || 'Desconocido';
+  }
+
   function renderStudentCard(student) {
     const card = document.createElement('div');
     card.className = `student-card${student.handRaised ? ' hand-raised' : ''}`;
     card.dataset.socketId = student.socketId;
+
+    const displayName = resolveStudentName(student);
+    const defaultName = student.hostname || '';
 
     const thumbContent = student.screenFrame
       ? `<img src="${student.screenFrame}" alt="pantalla" />`
@@ -267,7 +276,10 @@
 
     card.innerHTML = `
       <div class="student-card-header">
-        <span class="name">${escapeHtml(student.hostname)}</span>
+        <div class="student-name-wrap">
+          <span class="name">${escapeHtml(displayName)}</span>
+          ${defaultName ? `<span class="name-sub">${escapeHtml(defaultName)}</span>` : ''}
+        </div>
         ${student.handRaised ? '<span class="hand-badge">✋ Mano alzada</span>' : ''}
       </div>
       <div class="student-meta">
@@ -278,11 +290,18 @@
       <div class="student-card-actions">
         <button class="btn btn-live" data-action="live">🖥️ Ver pantalla</button>
         <button class="btn btn-secondary" data-action="files">📁 Archivos</button>
+        <button class="btn btn-secondary" data-action="rename">✏️ Renombrar</button>
+        ${student.handRaised ? '<button class="btn btn-hand" data-action="lower">👋 Bajar Mano</button>' : ''}
       </div>
     `;
 
-    card.querySelector('[data-action="live"]').addEventListener('click', () => api.openStudentScreenWindow(student.socketId, student.hostname));
+    card.querySelector('[data-action="live"]').addEventListener('click', () => api.openStudentScreenWindow(student.socketId, displayName));
     card.querySelector('[data-action="files"]').addEventListener('click', () => openFileManager(student.socketId));
+    card.querySelector('[data-action="rename"]').addEventListener('click', () => renameStudent(student));
+    const lowerBtn = card.querySelector('[data-action="lower"]');
+    if (lowerBtn) {
+      lowerBtn.addEventListener('click', () => lowerHand(student.socketId));
+    }
 
     return card;
   }
@@ -306,6 +325,23 @@
       students = result.students;
       renderStudents();
     }
+  }
+
+  function lowerHand(studentSocketId) {
+    api.lowerHand(studentSocketId);
+  }
+
+  function renameStudent(student) {
+    if (!student.instanceId) {
+      showToast('El equipo no reportó un identificador único.', 'error');
+      return;
+    }
+    const current = resolveStudentName(student);
+    const customName = window.prompt('Nombre visible del equipo:', current);
+    if (customName === null) {
+      return; // cancelado
+    }
+    api.assignCustomName(student.instanceId, customName);
   }
 
   // ---------------------------------------------------------------------------
@@ -360,6 +396,17 @@
       showToast(`Dominio "${domain}" desbloqueado.`, 'success');
     } else {
       showToast(result && result.error ? result.error : 'Error al desbloquear el dominio.', 'error');
+    }
+  }
+
+  async function reapplyDns() {
+    const result = await api.reapplyDnsRules();
+    if (result && result.success) {
+      blockedDomains = result.domains || [];
+      renderDnsChips();
+      showToast('Configuración de bloqueo DNS re-aplicada en los equipos.', 'success');
+    } else {
+      showToast('Error al re-aplicar la configuración DNS.', 'error');
     }
   }
 
@@ -501,7 +548,7 @@
       }
     }, 30);
 
-    sharingBanner.classList.remove('hidden');
+    screenShareBadge.classList.remove('hidden');
   }
 
   function stopLiveFrameLoop() {
@@ -509,7 +556,7 @@
       clearInterval(liveFrameTimer);
       liveFrameTimer = null;
     }
-    sharingBanner.classList.add('hidden');
+    screenShareBadge.classList.add('hidden');
   }
 
   function showStudentNotice(text) {
@@ -940,6 +987,28 @@
       renderStudents();
     });
 
+    api.on('sync-global-state', (config) => {
+      if (!config) {
+        return;
+      }
+      if (Array.isArray(config.blockedDomains)) {
+        blockedDomains = config.blockedDomains;
+        renderDnsChips();
+      }
+      if (config.deviceAliases && typeof config.deviceAliases === 'object') {
+        deviceAliases = config.deviceAliases;
+        renderStudents();
+      }
+    });
+
+    api.on('teacher-lower-hand', () => {
+      if (state.role === 'student') {
+        handRaised = false;
+        btnRaiseHand.classList.remove('active');
+        btnRaiseHand.textContent = '✋ Alzar la mano';
+      }
+    });
+
     api.on('screen-frame-update', (frame) => {
       updateThumbnail(frame.socketId, frame.dataUrl);
     });
@@ -1025,7 +1094,6 @@
     chatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChatFrom(chatInput);
     });
-    btnStopShare.addEventListener('click', stopLiveFrameLoop);
 
     // Maestro
     btnRefreshList.addEventListener('click', refreshStudentList);
@@ -1035,6 +1103,7 @@
       renderStudents();
     });
     btnAddDns.addEventListener('click', addDnsDomain);
+    btnReapplyDns.addEventListener('click', reapplyDns);
     dnsInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addDnsDomain();
     });
