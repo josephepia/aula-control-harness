@@ -40,6 +40,9 @@ let connectedMasterUrl = null; // URL del maestro al que está conectado el estu
 const chatHistory = [];
 const MAX_CHAT_HISTORY = 200;
 
+// Dominios bloqueados en la sesión actual del maestro (refleja el archivo hosts).
+const blockedDomains = new Set();
+
 // ---------------------------------------------------------------------------
 // Utilidades
 // ---------------------------------------------------------------------------
@@ -113,6 +116,52 @@ async function removeDnsBlock(domain) {
   } catch (err) {
     return { success: false, error: `No se pudo desbloquear ${domain}: ${err.message}` };
   }
+}
+
+/**
+ * Normaliza un dominio ingresado por el usuario:
+ * elimina espacios, protocolo (http/https) y rutas.
+ */
+function normalizeDomain(domain) {
+  return String(domain || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/\/.*$/, '');
+}
+
+function getBlockedDomains() {
+  return Array.from(blockedDomains);
+}
+
+/**
+ * Bloquea un dominio: lo escribe en hosts, lo registra en memoria y
+ * propaga la orden a todos los estudiantes conectados.
+ */
+async function addBlockedDomain(domain) {
+  const result = await applyDnsBlock(domain);
+  if (result.success) {
+    blockedDomains.add(domain);
+    if (masterServer) {
+      masterServer.io.emit('execute-dns-command', { action: 'block', domain });
+    }
+  }
+  return { ...result, domains: getBlockedDomains() };
+}
+
+/**
+ * Desbloquea un dominio: lo quita de hosts, lo elimina de memoria y
+ * propaga la orden a todos los estudiantes conectados.
+ */
+async function removeBlockedDomain(domain) {
+  const result = await removeDnsBlock(domain);
+  if (result.success) {
+    blockedDomains.delete(domain);
+    if (masterServer) {
+      masterServer.io.emit('execute-dns-command', { action: 'unblock', domain });
+    }
+  }
+  return { ...result, domains: getBlockedDomains() };
 }
 
 // ---------------------------------------------------------------------------
@@ -431,27 +480,30 @@ function registerIpcHandlers() {
     return { success: false, students: [] };
   });
 
-  ipcMain.handle('dns-command', async (event, command) => {
-    const action = command?.action;
-    const domain = String(command?.domain || '').trim();
+  ipcMain.handle('get-dns-state', () => {
+    return { domains: getBlockedDomains() };
+  });
 
+  ipcMain.handle('add-dns-domain', async (event, rawDomain) => {
+    const domain = normalizeDomain(rawDomain);
     if (!domain) {
       return { success: false, error: 'Dominio no especificado.' };
     }
-    if (action !== 'block' && action !== 'unblock') {
-      return { success: false, error: 'Acción desconocida.' };
+    if (role !== 'teacher' || !masterServer) {
+      return { success: false, error: 'Solo disponible en modo maestro.' };
     }
+    return await addBlockedDomain(domain);
+  });
 
-    if (role === 'teacher' && masterServer) {
-      // Aplica localmente y propaga a todos los estudiantes.
-      const localResult = action === 'unblock'
-        ? await removeDnsBlock(domain)
-        : await applyDnsBlock(domain);
-      masterServer.io.emit('execute-dns-command', { action, domain });
-      return localResult;
+  ipcMain.handle('remove-dns-domain', async (event, rawDomain) => {
+    const domain = normalizeDomain(rawDomain);
+    if (!domain) {
+      return { success: false, error: 'Dominio no especificado.' };
     }
-
-    return { success: false, error: 'Solo disponible en modo maestro.' };
+    if (role !== 'teacher' || !masterServer) {
+      return { success: false, error: 'Solo disponible en modo maestro.' };
+    }
+    return await removeBlockedDomain(domain);
   });
 
   // ---------- Streaming WebRTC ----------

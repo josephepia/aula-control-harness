@@ -23,7 +23,9 @@ contextBridge.exposeInMainWorld('aulaControl', {
   sendChat: (text) => ipcRenderer.invoke('send-chat', text),
   raiseHand: (raised) => ipcRenderer.invoke('raise-hand', raised),
   requestStudentList: () => ipcRenderer.invoke('request-student-list'),
-  dnsCommand: (action, domain) => ipcRenderer.invoke('dns-command', { action, domain }),
+  getDnsDomains: () => ipcRenderer.invoke('get-dns-state'),
+  addDnsDomain: (domain) => ipcRenderer.invoke('add-dns-domain', domain),
+  removeDnsDomain: (domain) => ipcRenderer.invoke('remove-dns-domain', domain),
   sendWebrtcSignal: (targetSocketId, signal) =>
     ipcRenderer.invoke('send-webrtc-signal', { targetSocketId, signal }),
   fileCommand: (command) => ipcRenderer.invoke('file-command', command),

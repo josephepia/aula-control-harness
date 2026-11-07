@@ -436,6 +436,101 @@ textarea:focus {
   color: var(--danger);
 }
 
+/* ------------------------------------------------------------------ Maestro: layout a dos columnas */
+#teacher-view {
+  overflow: hidden;
+}
+
+.teacher-main {
+  flex: 1;
+  display: flex;
+  gap: 16px;
+  min-height: 0;
+}
+
+.teacher-left {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.teacher-sidebar {
+  width: 340px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.teacher-sidebar .chat-card {
+  flex: 1;
+  min-height: 240px;
+}
+
+/* Cabecera genérica de tarjeta (Chat y DNS) */
+.card-header {
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.card-header h3 {
+  font-size: 1rem;
+}
+
+/* Bloqueo DNS: lista interactiva de chips */
+.dns-add-row {
+  display: flex;
+  gap: 8px;
+}
+
+.dns-add-row input {
+  flex: 1;
+}
+
+.dns-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.dns-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--danger);
+  border-radius: 999px;
+  padding: 5px 8px 5px 12px;
+  font-size: 0.85rem;
+}
+
+.chip-remove {
+  background: transparent;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 3px;
+  font-weight: 700;
+  border-radius: 50%;
+}
+
+.chip-remove:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+#dns-empty {
+  margin-top: 10px;
+}
+
 /* ------------------------------------------------------------------ Modales */
 .modal-overlay {
   position: fixed;

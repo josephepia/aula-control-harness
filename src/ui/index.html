@@ -57,19 +57,41 @@
           <button id="btn-toggle-view" class="btn btn-secondary">⣿ Ver en lista</button>
           <span id="student-count" class="muted"></span>
         </div>
-        <div class="toolbar-group">
-          <input id="dns-input" type="text" placeholder="Dominio (ej. facebook.com)" autocomplete="off" />
-          <button id="btn-block-dns" class="btn btn-danger">Bloquear DNS</button>
-          <button id="btn-unblock-dns" class="btn btn-secondary">Desbloquear</button>
-        </div>
       </div>
 
       <div id="dns-feedback" class="toast hidden"></div>
 
-      <div id="students-container" class="students-grid"></div>
-      <div id="students-empty" class="empty-state hidden">
-        <p>No hay estudiantes conectados en este momento.</p>
-        <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+      <div class="teacher-main">
+        <!-- Columna izquierda: lista de estudiantes -->
+        <div class="teacher-left">
+          <div id="students-container" class="students-grid"></div>
+          <div id="students-empty" class="empty-state hidden">
+            <p>No hay estudiantes conectados en este momento.</p>
+            <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+          </div>
+        </div>
+
+        <!-- Columna derecha: bloqueo DNS + chat en vivo (siempre visibles) -->
+        <div class="teacher-sidebar">
+          <div class="card dns-card">
+            <div class="card-header"><h3>🔒 Bloqueo DNS</h3></div>
+            <div class="dns-add-row">
+              <input id="dns-input" type="text" placeholder="Agregar dominio (ej. facebook.com)" autocomplete="off" />
+              <button id="btn-add-dns" class="btn">Agregar</button>
+            </div>
+            <div id="dns-chips" class="dns-chips"></div>
+            <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
+          </div>
+
+          <div class="card chat-card">
+            <div class="card-header"><h3>💬 Chat del aula</h3></div>
+            <div id="teacher-chat-messages" class="chat-messages"></div>
+            <div class="chat-input-row">
+              <input id="teacher-chat-input" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
+              <button id="btn-teacher-send-chat" class="btn">Enviar</button>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   </main>

@@ -20,6 +20,7 @@
   let isGridView = true;
   let handRaised = false;
   let students = [];
+  let blockedDomains = [];
 
   // Streaming WebRTC
   const livePeers = new Map(); // Maestro: studentSocketId -> RTCPeerConnection
@@ -59,12 +60,18 @@
   const btnRefreshList = $('btn-refresh-list');
   const btnToggleView = $('btn-toggle-view');
   const studentCount = $('student-count');
-  const dnsInput = $('dns-input');
-  const btnBlockDns = $('btn-block-dns');
-  const btnUnblockDns = $('btn-unblock-dns');
-  const dnsFeedback = $('dns-feedback');
   const studentsContainer = $('students-container');
   const studentsEmpty = $('students-empty');
+
+  const dnsInput = $('dns-input');
+  const btnAddDns = $('btn-add-dns');
+  const dnsChips = $('dns-chips');
+  const dnsEmpty = $('dns-empty');
+  const dnsFeedback = $('dns-feedback');
+
+  const teacherChatMessages = $('teacher-chat-messages');
+  const teacherChatInput = $('teacher-chat-input');
+  const btnTeacherSendChat = $('btn-teacher-send-chat');
 
   const loginModal = $('login-modal');
   const loginUser = $('login-user');
@@ -120,6 +127,13 @@
   // Chat
   // ---------------------------------------------------------------------------
   function renderChatMessage(message) {
+    for (const container of [chatMessages, teacherChatMessages]) {
+      container.appendChild(buildChatElement(message));
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+
+  function buildChatElement(message) {
     const div = document.createElement('div');
     const isOwn = message.sender === state.hostname;
     div.className = `chat-message${isOwn ? ' own' : ''}`;
@@ -127,8 +141,7 @@
       <div class="meta">${escapeHtml(message.sender || 'Desconocido')} · ${formatTime(message.timestamp)}</div>
       <div>${escapeHtml(message.text || '')}</div>
     `;
-    chatMessages.appendChild(div);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return div;
   }
 
   function escapeHtml(value) {
@@ -140,11 +153,11 @@
       .replace(/'/g, '&#39;');
   }
 
-  function sendChat() {
-    const text = chatInput.value.trim();
+  function sendChatFrom(input) {
+    const text = input.value.trim();
     if (!text) return;
     api.sendChat(text);
-    chatInput.value = '';
+    input.value = '';
   }
 
   // ---------------------------------------------------------------------------
@@ -193,6 +206,7 @@
     btnOpenLogin.classList.add('hidden');
     btnLogout.classList.remove('hidden');
     refreshStudentList();
+    loadDnsDomains();
   }
 
   // ---------------------------------------------------------------------------
@@ -266,20 +280,56 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Vista maestro: DNS
+  // Vista maestro: Bloqueo DNS (lista interactiva de dominios con chips)
   // ---------------------------------------------------------------------------
-  async function runDnsCommand(action) {
+  async function loadDnsDomains() {
+    const result = await api.getDnsDomains();
+    blockedDomains = (result && result.domains) || [];
+    renderDnsChips();
+  }
+
+  function renderDnsChips() {
+    dnsChips.innerHTML = '';
+    dnsEmpty.classList.toggle('hidden', blockedDomains.length > 0);
+
+    for (const domain of blockedDomains) {
+      const chip = document.createElement('span');
+      chip.className = 'dns-chip';
+      chip.innerHTML = `
+        <span>${escapeHtml(domain)}</span>
+        <button class="chip-remove" title="Quitar bloqueo">×</button>
+      `;
+      chip.querySelector('.chip-remove').addEventListener('click', () => removeDnsDomain(domain));
+      dnsChips.appendChild(chip);
+    }
+  }
+
+  async function addDnsDomain() {
     const domain = dnsInput.value.trim();
     if (!domain) {
-      showToast('Escribe un dominio primero.', 'error');
+      showToast('Escribe un dominio para bloquear.', 'error');
       return;
     }
 
-    const result = await api.dnsCommand(action, domain);
+    const result = await api.addDnsDomain(domain);
     if (result && result.success) {
-      showToast(result.message, 'success');
+      blockedDomains = result.domains || [];
+      dnsInput.value = '';
+      renderDnsChips();
+      showToast(`Dominio "${domain}" bloqueado.`, 'success');
     } else {
-      showToast(result && result.error ? result.error : 'Error al ejecutar la acción.', 'error');
+      showToast(result && result.error ? result.error : 'Error al bloquear el dominio.', 'error');
+    }
+  }
+
+  async function removeDnsDomain(domain) {
+    const result = await api.removeDnsDomain(domain);
+    if (result && result.success) {
+      blockedDomains = result.domains || [];
+      renderDnsChips();
+      showToast(`Dominio "${domain}" desbloqueado.`, 'success');
+    } else {
+      showToast(result && result.error ? result.error : 'Error al desbloquear el dominio.', 'error');
     }
   }
 
@@ -624,9 +674,9 @@
 
     // Estudiante
     btnRaiseHand.addEventListener('click', toggleHand);
-    btnSendChat.addEventListener('click', sendChat);
+    btnSendChat.addEventListener('click', () => sendChatFrom(chatInput));
     chatInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendChat();
+      if (e.key === 'Enter') sendChatFrom(chatInput);
     });
     btnStopShare.addEventListener('click', stopStudentShare);
 
@@ -637,10 +687,13 @@
       btnToggleView.textContent = isGridView ? '⣿ Ver en lista' : '⊞ Ver en grilla';
       renderStudents();
     });
-    btnBlockDns.addEventListener('click', () => runDnsCommand('block'));
-    btnUnblockDns.addEventListener('click', () => runDnsCommand('unblock'));
+    btnAddDns.addEventListener('click', addDnsDomain);
     dnsInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') runDnsCommand('block');
+      if (e.key === 'Enter') addDnsDomain();
+    });
+    btnTeacherSendChat.addEventListener('click', () => sendChatFrom(teacherChatInput));
+    teacherChatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendChatFrom(teacherChatInput);
     });
 
     // Visualización en vivo
