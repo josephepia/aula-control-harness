@@ -24,8 +24,7 @@
   let broadcastSelectedPaths = [];
   let activeTeacherTab = 'students';
 
-  // Transmisión en vivo por fotogramas (reusa la captura de fondo)
-  let currentLiveStudent = null; // Maestro: estudiante en visualización
+  // Transmisión en vivo por fotogramas (estudiante envía; maestro usa ventana propia)
   let liveFrameTimer = null;     // Estudiante: bucle de envío de fotogramas
 
   // Captura de fondo (miniaturas + en vivo por canvas/JPEG)
@@ -69,9 +68,11 @@
 
   const btnRefreshList = $('btn-refresh-list');
   const btnToggleView = $('btn-toggle-view');
-  const studentCount = $('student-count');
   const studentsContainer = $('students-container');
   const studentsEmpty = $('students-empty');
+  const metricStudents = $('metric-students');
+  const metricRaised = $('metric-raised');
+  const metricBlocked = $('metric-blocked');
 
   const dnsInput = $('dns-input');
   const btnAddDns = $('btn-add-dns');
@@ -79,11 +80,10 @@
   const dnsEmpty = $('dns-empty');
   const dnsFeedback = $('dns-feedback');
 
-  const tabStudents = $('tab-students');
-  const tabBroadcast = $('tab-broadcast');
-  const studentsTab = $('students-tab');
-  const broadcastTab = $('broadcast-tab');
-  const studentsToolbar = $('students-toolbar');
+  const sidebarHostname = $('sidebar-hostname');
+  const settingsHostname = $('settings-hostname');
+  const settingsInstance = $('settings-instance');
+  const navItems = document.querySelectorAll('.nav-item');
 
   const broadcastDropzone = $('broadcast-dropzone');
   const btnSelectPaths = $('btn-select-paths');
@@ -103,12 +103,6 @@
   const loginError = $('login-error');
   const btnCancelLogin = $('btn-cancel-login');
   const btnSubmitLogin = $('btn-submit-login');
-
-  const liveModal = $('live-modal');
-  const liveImage = $('live-image');
-  const liveTitle = $('live-title');
-  const liveStatus = $('live-status');
-  const btnCloseLive = $('btn-close-live');
 
   const filesModal = $('files-modal');
   const filesPath = $('files-path');
@@ -221,7 +215,6 @@
     studentView.classList.remove('hidden');
     btnOpenLogin.classList.remove('hidden');
     btnLogout.classList.add('hidden');
-    closeLiveView();
     stopLiveFrameLoop();
     stopBackgroundCapture();
   }
@@ -236,7 +229,10 @@
     btnLogout.classList.remove('hidden');
     stopLiveFrameLoop();
     stopBackgroundCapture();
-    switchTeacherTab('students');
+    sidebarHostname.textContent = state.hostname || '';
+    settingsHostname.textContent = state.hostname || '';
+    settingsInstance.textContent = state.instanceId || '';
+    switchTeacherSection('dashboard');
     refreshStudentList();
     loadDnsDomains();
   }
@@ -250,9 +246,10 @@
 
     const hasStudents = students && students.length > 0;
     studentsEmpty.classList.toggle('hidden', hasStudents);
-    studentCount.textContent = hasStudents
-      ? `${students.length} estudiante${students.length === 1 ? '' : 's'} conectado${students.length === 1 ? '' : 's'}`
-      : '';
+
+    const raised = students.filter((s) => s.handRaised).length;
+    metricStudents.textContent = String(students.length);
+    metricRaised.textContent = String(raised);
 
     for (const student of students) {
       studentsContainer.appendChild(renderStudentCard(student));
@@ -284,7 +281,7 @@
       </div>
     `;
 
-    card.querySelector('[data-action="live"]').addEventListener('click', () => startLiveView(student));
+    card.querySelector('[data-action="live"]').addEventListener('click', () => api.openStudentScreenWindow(student.socketId, student.hostname));
     card.querySelector('[data-action="files"]').addEventListener('click', () => openFileManager(student.socketId));
 
     return card;
@@ -323,6 +320,7 @@
   function renderDnsChips() {
     dnsChips.innerHTML = '';
     dnsEmpty.classList.toggle('hidden', blockedDomains.length > 0);
+    metricBlocked.textContent = String(blockedDomains.length);
 
     for (const domain of blockedDomains) {
       const chip = document.createElement('span');
@@ -366,34 +364,9 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Transmisión en vivo: maestro visualiza fotogramas del estudiante (modal)
-  // Reutiliza la captura de fondo del estudiante en lugar de abrir una segunda
-  // fuente de video (evita pantallas negras y nuevas ventanas sin permisos).
+  // Transmisión en vivo: el maestro abre una BrowserWindow independiente vía
+  // IPC 'open-student-screen-window'; el estudiante solo envía fotogramas.
   // ---------------------------------------------------------------------------
-  async function startLiveView(student) {
-    closeLiveView();
-    currentLiveStudent = student;
-    showLiveModal(student.hostname);
-    await api.startLiveWatch(student.socketId);
-  }
-
-  function closeLiveView() {
-    if (currentLiveStudent) {
-      api.stopLiveWatch(currentLiveStudent.socketId);
-      currentLiveStudent = null;
-    }
-    liveImage.removeAttribute('src');
-    liveModal.classList.add('hidden');
-  }
-
-  function showLiveModal(studentHostname) {
-    liveTitle.textContent = `🖥️ Pantalla: ${studentHostname || 'Estudiante'}`;
-    liveStatus.textContent = 'Solicitando pantalla del estudiante…';
-    liveStatus.classList.remove('error-text');
-    liveStatus.classList.remove('hidden');
-    liveImage.removeAttribute('src');
-    liveModal.classList.remove('hidden');
-  }
 
   // ---------------------------------------------------------------------------
   // WebRTC: estudiante responde compartiendo su pantalla
@@ -424,6 +397,10 @@
         mandatory: {
           chromeMediaSource: 'desktop',
           chromeMediaSourceId: sourceId,
+          minWidth: 1920,
+          minHeight: 1080,
+          maxWidth: 4096,
+          maxHeight: 2160,
           maxFrameRate: 30
         }
       }
@@ -518,7 +495,7 @@
 
     stopLiveFrameLoop();
     liveFrameTimer = setInterval(() => {
-      const frame = captureFrame(640, 0.5);
+      const frame = captureFrame(1920, 0.8);
       if (frame) {
         api.sendLiveFrame(frame);
       }
@@ -566,6 +543,21 @@
   function setFilesStatus(message, isError) {
     filesStatus.textContent = message || '';
     filesStatus.className = `muted${isError ? ' error-text' : ''}`;
+  }
+
+  const VIEWABLE_TEXT_EXTENSIONS = ['.txt', '.json', '.md'];
+  const VIEWABLE_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'];
+
+  function fileExtension(fileName) {
+    const i = String(fileName || '').lastIndexOf('.');
+    return i >= 0 ? String(fileName).slice(i).toLowerCase() : '';
+  }
+
+  function getFileViewKind(fileName) {
+    const ext = fileExtension(fileName);
+    if (VIEWABLE_TEXT_EXTENSIONS.includes(ext)) return 'text';
+    if (VIEWABLE_IMAGE_EXTENSIONS.includes(ext)) return 'image';
+    return 'other';
   }
 
   async function listRemoteDirectory(dirPath) {
@@ -621,7 +613,14 @@
         editBtn.textContent = '✏️';
         editBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          readRemoteFile(targetPath);
+          const kind = getFileViewKind(entry.name);
+          if (kind === 'text') {
+            readRemoteFile(targetPath);
+          } else if (kind === 'image') {
+            setFilesStatus('Archivo de imagen: usa "Descargar" para visualizarlo.', false);
+          } else {
+            setFilesStatus('Este tipo de archivo debe descargarse para abrirlo con una app externa.', false);
+          }
         });
 
         const dlBtn = document.createElement('button');
@@ -738,8 +737,10 @@
       base64 = data || '';
     }
 
-    const saved = await api.saveToDownloads(filename, base64);
-    if (saved && saved.success) {
+    const saved = await api.saveDownloadedFile(filename, base64);
+    if (saved && saved.canceled) {
+      setFilesStatus('Descarga cancelada.', false);
+    } else if (saved && saved.success) {
       setFilesStatus(`Descargado en ${saved.path}`, false);
     } else {
       setFilesStatus(saved && saved.error ? saved.error : 'Error al guardar la descarga.', true);
@@ -816,20 +817,22 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Pestañas del Maestro
+  // Navegación por secciones del Maestro (sidebar)
   // ---------------------------------------------------------------------------
-  function switchTeacherTab(tab) {
-    activeTeacherTab = tab;
-    const isStudents = tab === 'students';
+  function switchTeacherSection(section) {
+    activeTeacherTab = section;
 
-    studentsTab.classList.toggle('hidden', !isStudents);
-    broadcastTab.classList.toggle('hidden', isStudents);
-    studentsToolbar.classList.toggle('hidden', !isStudents);
+    for (const nav of navItems) {
+      nav.classList.toggle('active', nav.dataset.section === section);
+    }
 
-    tabStudents.classList.toggle('active', isStudents);
-    tabStudents.classList.toggle('btn-secondary', !isStudents);
-    tabBroadcast.classList.toggle('active', !isStudents);
-    tabBroadcast.classList.toggle('btn-secondary', isStudents);
+    const sectionIds = ['dashboard', 'broadcast', 'dns', 'chat', 'settings'];
+    for (const id of sectionIds) {
+      const el = document.getElementById(`section-${id}`);
+      if (el) {
+        el.classList.toggle('hidden', id !== section);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -918,22 +921,6 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Fotogramas en vivo recibidos del estudiante
-  // ---------------------------------------------------------------------------
-  function handleLiveFrame(socketId, dataUrl) {
-    if (state.role !== 'teacher' || !currentLiveStudent) {
-      return;
-    }
-    if (socketId !== currentLiveStudent.socketId) {
-      return;
-    }
-    if (dataUrl) {
-      liveImage.src = dataUrl;
-      liveStatus.classList.add('hidden');
-    }
-  }
-
-  // ---------------------------------------------------------------------------
   // Suscripciones a eventos del proceso principal
   // ---------------------------------------------------------------------------
   function subscribeToEvents() {
@@ -955,10 +942,6 @@
 
     api.on('screen-frame-update', (frame) => {
       updateThumbnail(frame.socketId, frame.dataUrl);
-    });
-
-    api.on('student-live-frame', (frame) => {
-      handleLiveFrame(frame.socketId, frame.dataUrl);
     });
 
     api.on('live-watch-start', () => {
@@ -1007,14 +990,6 @@
           ? `📥 Se recibieron ${info.written} archivo(s) del maestro en ${info.destDir}.`
           : `⚠️ Error al recibir archivos: ${info.error}`;
         showStudentNotice(text);
-      }
-    });
-
-    api.on('screen-capture-error', (payload) => {
-      if (state.role === 'teacher') {
-        liveStatus.textContent = `El estudiante "${payload.hostname || 'Desconocido'}" no pudo compartir pantalla: ${payload.reason}`;
-        liveStatus.classList.add('error-text');
-        liveStatus.classList.remove('hidden');
       }
     });
 
@@ -1068,17 +1043,15 @@
       if (e.key === 'Enter') sendChatFrom(teacherChatInput);
     });
 
-    // Pestañas del Maestro
-    tabStudents.addEventListener('click', () => switchTeacherTab('students'));
-    tabBroadcast.addEventListener('click', () => switchTeacherTab('broadcast'));
+    // Navegación por sidebar
+    for (const nav of navItems) {
+      nav.addEventListener('click', () => switchTeacherSection(nav.dataset.section));
+    }
 
     // Difusión masiva
     btnSelectPaths.addEventListener('click', selectBroadcastPaths);
     btnBroadcastSend.addEventListener('click', sendBroadcast);
     setupDragAndDrop();
-
-    // Visualización en vivo
-    btnCloseLive.addEventListener('click', closeLiveView);
 
     // Gestor de archivos
     btnCloseFiles.addEventListener('click', () => filesModal.classList.add('hidden'));

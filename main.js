@@ -37,6 +37,9 @@ let masterServer = null;    // Modo maestro: servidor Express + Socket.io
 let studentSocket = null;   // Modo estudiante: cliente socket.io hacia el maestro
 let connectedMasterUrl = null; // URL del maestro al que está conectado el estudiante
 
+// Ventanas independientes de visualización de pantalla (socketId -> BrowserWindow).
+const screenWindows = new Map();
+
 const chatHistory = [];
 const MAX_CHAT_HISTORY = 200;
 
@@ -537,6 +540,14 @@ async function handleIncomingBroadcast(payload) {
 function startStudentMode() {
   role = 'student';
 
+  // Cerrar ventanas de pantalla independientes.
+  for (const win of screenWindows.values()) {
+    if (!win.isDestroyed()) {
+      win.close();
+    }
+  }
+  screenWindows.clear();
+
   // Detener artefactos del modo maestro.
   if (radarBroadcaster) {
     radarBroadcaster.stop();
@@ -595,7 +606,10 @@ function startTeacherMode() {
     pushToRenderer('screen-frame-update', frame);
   });
   masterServer.on('student-live-frame', (frame) => {
-    pushToRenderer('student-live-frame', frame);
+    const win = screenWindows.get(frame.socketId);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('student-live-frame', frame);
+    }
   });
   masterServer.on('file-response', (response) => {
     pushToRenderer('file-response', response);
@@ -607,7 +621,10 @@ function startTeacherMode() {
     pushToRenderer('file-chunk-end', end);
   });
   masterServer.on('screen-capture-error', (payload) => {
-    pushToRenderer('screen-capture-error', payload);
+    const win = screenWindows.get(payload.studentSocketId);
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('screen-capture-error', payload);
+    }
   });
 
   masterServer.start().catch((err) => {
@@ -749,21 +766,45 @@ function registerIpcHandlers() {
     }
   });
 
-  // ---------- Transmisión en vivo por fotogramas (reusa la captura de fondo) ----------
-  ipcMain.handle('start-live-watch', (event, targetSocketId) => {
-    if (role === 'teacher' && masterServer && targetSocketId) {
-      masterServer.io.to(targetSocketId).emit('live-watch-start');
-      return { success: true };
+  // ---------- Ventana independiente para pantalla de un estudiante ----------
+  ipcMain.handle('open-student-screen-window', (event, payload) => {
+    const socketId = payload?.socketId;
+    const hostname = payload?.hostname || 'Estudiante';
+    if (role !== 'teacher' || !masterServer || !socketId) {
+      return { success: false, error: 'No disponible en este momento.' };
     }
-    return { success: false, error: 'No hay conexión activa.' };
-  });
 
-  ipcMain.handle('stop-live-watch', (event, targetSocketId) => {
-    if (role === 'teacher' && masterServer && targetSocketId) {
-      masterServer.io.to(targetSocketId).emit('live-watch-stop');
-      return { success: true };
+    const existing = screenWindows.get(socketId);
+    if (existing && !existing.isDestroyed()) {
+      existing.focus();
+      return { success: true, focused: true };
     }
-    return { success: false, error: 'No hay conexión activa.' };
+
+    const win = new BrowserWindow({
+      width: 1280,
+      height: 720,
+      title: `Pantalla: ${hostname}`,
+      backgroundColor: '#000000',
+      webPreferences: {
+        preload: path.join(__dirname, 'preload.js'),
+        nodeIntegration: false,
+        contextIsolation: true
+      }
+    });
+
+    win.loadFile(path.join(__dirname, 'src', 'ui', 'screen.html'));
+    screenWindows.set(socketId, win);
+
+    win.on('closed', () => {
+      screenWindows.delete(socketId);
+      if (masterServer) {
+        masterServer.io.to(socketId).emit('live-watch-stop');
+      }
+    });
+
+    // Inicia la transmisión en vivo del estudiante.
+    masterServer.io.to(socketId).emit('live-watch-start');
+    return { success: true };
   });
 
   ipcMain.handle('send-live-frame', (event, dataUrl) => {
@@ -848,18 +889,27 @@ function registerIpcHandlers() {
     return { success: true, paths: result.filePaths };
   });
 
-  // ---------- Guardar archivo descargado en la carpeta de descargas ----------
-  ipcMain.handle('save-to-downloads', async (event, payload) => {
+  // ---------- Guardar archivo descargado (diálogo nativo de guardar) ----------
+  ipcMain.handle('save-downloaded-file', async (event, payload) => {
     const filename = path.basename(String((payload && payload.filename) || 'archivo'));
     const data = (payload && payload.data) || '';
     if (!data) {
       return { success: false, error: 'Sin datos para guardar.' };
     }
+
+    const result = await dialog.showSaveDialog(mainWindow, {
+      title: 'Guardar archivo descargado',
+      defaultPath: path.join(app.getPath('downloads'), filename),
+      buttonLabel: 'Guardar'
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
     try {
-      const downloadsDir = app.getPath('downloads');
-      const targetPath = path.join(downloadsDir, filename);
-      await fs.promises.writeFile(targetPath, Buffer.from(data, 'base64'));
-      return { success: true, path: targetPath };
+      await fs.promises.writeFile(result.filePath, Buffer.from(data, 'base64'));
+      return { success: true, path: result.filePath };
     } catch (err) {
       return { success: false, error: `No se pudo guardar: ${err.message}` };
     }
@@ -930,6 +980,12 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  for (const win of screenWindows.values()) {
+    if (!win.isDestroyed()) {
+      win.close();
+    }
+  }
+  screenWindows.clear();
   if (radarListener) {
     radarListener.stop();
   }

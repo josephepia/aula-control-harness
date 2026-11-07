@@ -55,77 +55,115 @@
 
     <!-- ===================== VISTA MAESTRO (admin) ===================== -->
     <section id="teacher-view" class="view hidden">
-      <div class="card toolbar">
-        <div class="toolbar-group">
-          <button id="tab-students" class="btn tab-btn active">👥 Estudiantes</button>
-          <button id="tab-broadcast" class="btn btn-secondary tab-btn">📦 Difusión Masiva</button>
+      <aside class="app-sidebar">
+        <div class="sidebar-brand">🖥️ Aula Control</div>
+        <nav class="sidebar-nav">
+          <button class="nav-item active" data-section="dashboard">📊 Dashboard</button>
+          <button class="nav-item" data-section="broadcast">📦 Difusión de Archivos</button>
+          <button class="nav-item" data-section="dns">🔒 Bloqueo DNS</button>
+          <button class="nav-item" data-section="chat">💬 Chat de Aula</button>
+          <button class="nav-item" data-section="settings">⚙️ Configuración</button>
+        </nav>
+        <div class="sidebar-user">
+          <div class="avatar">👤</div>
+          <div class="user-meta">
+            <span class="user-name">Maestro</span>
+            <span id="sidebar-hostname" class="muted"></span>
+          </div>
         </div>
-        <div class="toolbar-group" id="students-toolbar">
-          <button id="btn-refresh-list" class="btn">🔄 Refrescar lista</button>
-          <button id="btn-toggle-view" class="btn btn-secondary">⣿ Ver en lista</button>
-          <span id="student-count" class="muted"></span>
-        </div>
-      </div>
+      </aside>
 
-      <div id="dns-feedback" class="toast hidden"></div>
+      <div class="main-area">
+        <div id="dns-feedback" class="toast hidden"></div>
 
-      <!-- Pestaña: Estudiantes -->
-      <div id="students-tab" class="tab-panel">
-        <div class="teacher-main">
-          <!-- Columna izquierda: lista de estudiantes -->
-          <div class="teacher-left">
-            <div id="students-container" class="students-grid"></div>
-            <div id="students-empty" class="empty-state hidden">
-              <p>No hay estudiantes conectados en este momento.</p>
-              <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+        <!-- Sección: Dashboard / Grilla -->
+        <section id="section-dashboard" class="section active">
+          <div class="section-head">
+            <h2>Dashboard</h2>
+            <div class="toolbar-group">
+              <button id="btn-refresh-list" class="btn">🔄 Refrescar</button>
+              <button id="btn-toggle-view" class="btn btn-secondary">⣿ Lista</button>
             </div>
           </div>
+          <div class="metrics-row">
+            <div class="metric-card">
+              <span class="metric-value" id="metric-students">0</span>
+              <span class="metric-label">Estudiantes</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-value" id="metric-raised">0</span>
+              <span class="metric-label">Manos alzadas</span>
+            </div>
+            <div class="metric-card">
+              <span class="metric-value" id="metric-blocked">0</span>
+              <span class="metric-label">Dominios bloqueados</span>
+            </div>
+          </div>
+          <div id="students-container" class="students-grid"></div>
+          <div id="students-empty" class="empty-state hidden">
+            <p>No hay estudiantes conectados en este momento.</p>
+            <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+          </div>
+        </section>
 
-          <!-- Columna derecha: bloqueo DNS + chat en vivo (siempre visibles) -->
-          <div class="teacher-sidebar">
-            <div class="card dns-card">
-              <div class="card-header"><h3>🔒 Bloqueo DNS</h3></div>
-              <div class="dns-add-row">
-                <input id="dns-input" type="text" placeholder="Agregar dominio (ej. facebook.com)" autocomplete="off" />
-                <button id="btn-add-dns" class="btn">Agregar</button>
+        <!-- Sección: Difusión de Archivos -->
+        <section id="section-broadcast" class="section hidden">
+          <div class="section-head"><h2>Difusión de Archivos</h2></div>
+          <div class="broadcast-layout">
+            <div class="card broadcast-origin">
+              <div class="card-header"><h3>📤 Origen (Archivos a enviar)</h3></div>
+              <div id="broadcast-dropzone" class="dropzone">
+                <p>Arrastra y suelta archivos o carpetas aquí</p>
+                <button id="btn-select-paths" class="btn btn-secondary">📂 Seleccionar Archivos/Carpetas</button>
               </div>
-              <div id="dns-chips" class="dns-chips"></div>
-              <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
+              <ul id="broadcast-files" class="broadcast-files"></ul>
+              <p id="broadcast-files-empty" class="muted">No hay elementos seleccionados.</p>
             </div>
-
-            <div class="card chat-card">
-              <div class="card-header"><h3>💬 Chat del aula</h3></div>
-              <div id="teacher-chat-messages" class="chat-messages"></div>
-              <div class="chat-input-row">
-                <input id="teacher-chat-input" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
-                <button id="btn-teacher-send-chat" class="btn">Enviar</button>
-              </div>
+            <div class="card broadcast-destination">
+              <div class="card-header"><h3>📥 Destino en Estudiantes</h3></div>
+              <label class="muted" for="broadcast-dest">Ruta de destino en los estudiantes</label>
+              <input id="broadcast-dest" type="text" placeholder="ej. Documents/Clase_Hoy" autocomplete="off" />
+              <button id="btn-broadcast-send" class="btn">🚀 Enviar a todos</button>
+              <p id="broadcast-status" class="muted"></p>
             </div>
           </div>
-        </div>
-      </div>
+        </section>
 
-      <!-- Pestaña: Difusión Masiva (pantalla completa) -->
-      <div id="broadcast-tab" class="tab-panel hidden">
-        <div class="broadcast-layout">
-          <div class="card broadcast-origin">
-            <div class="card-header"><h3>📤 Origen (Archivos a enviar)</h3></div>
-            <div id="broadcast-dropzone" class="dropzone">
-              <p>Arrastra y suelta archivos o carpetas aquí</p>
-              <button id="btn-select-paths" class="btn btn-secondary">📂 Seleccionar Archivos/Carpetas</button>
+        <!-- Sección: Bloqueo DNS -->
+        <section id="section-dns" class="section hidden">
+          <div class="section-head"><h2>Bloqueo DNS</h2></div>
+          <div class="card">
+            <div class="card-header"><h3>🔒 Dominios bloqueados</h3></div>
+            <div class="dns-add-row">
+              <input id="dns-input" type="text" placeholder="Agregar dominio (ej. facebook.com)" autocomplete="off" />
+              <button id="btn-add-dns" class="btn">Agregar</button>
             </div>
-            <ul id="broadcast-files" class="broadcast-files"></ul>
-            <p id="broadcast-files-empty" class="muted">No hay elementos seleccionados.</p>
+            <div id="dns-chips" class="dns-chips"></div>
+            <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
           </div>
+        </section>
 
-          <div class="card broadcast-destination">
-            <div class="card-header"><h3>📥 Destino en Estudiantes</h3></div>
-            <label class="muted" for="broadcast-dest">Ruta de destino en los estudiantes</label>
-            <input id="broadcast-dest" type="text" placeholder="ej. Documents/Clase_Hoy" autocomplete="off" />
-            <button id="btn-broadcast-send" class="btn">🚀 Enviar a todos los estudiantes</button>
-            <p id="broadcast-status" class="muted"></p>
+        <!-- Sección: Chat de Aula -->
+        <section id="section-chat" class="section hidden">
+          <div class="section-head"><h2>Chat de Aula</h2></div>
+          <div class="card chat-card">
+            <div id="teacher-chat-messages" class="chat-messages"></div>
+            <div class="chat-input-row">
+              <input id="teacher-chat-input" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
+              <button id="btn-teacher-send-chat" class="btn">Enviar</button>
+            </div>
           </div>
-        </div>
+        </section>
+
+        <!-- Sección: Configuración -->
+        <section id="section-settings" class="section hidden">
+          <div class="section-head"><h2>Configuración</h2></div>
+          <div class="card">
+            <div class="card-header"><h3>⚙️ Información</h3></div>
+            <p class="muted">Hostname: <span id="settings-hostname"></span></p>
+            <p class="muted">Instance ID: <span id="settings-instance"></span></p>
+          </div>
+        </section>
       </div>
     </section>
   </main>
@@ -142,18 +180,6 @@
         <button id="btn-cancel-login" class="btn btn-secondary">Cancelar</button>
         <button id="btn-submit-login" class="btn">Ingresar</button>
       </div>
-    </div>
-  </div>
-
-  <!-- ===================== MODAL VISUALIZACIÓN EN VIVO (pantalla) ===================== -->
-  <div id="live-modal" class="modal-overlay hidden">
-    <div class="modal modal-wide modal-live">
-      <div class="modal-header">
-        <h2 id="live-title">🖥️ Pantalla en vivo</h2>
-        <button id="btn-close-live" class="btn btn-secondary btn-sm">Cerrar</button>
-      </div>
-      <p id="live-status" class="muted">Solicitando pantalla del estudiante…</p>
-      <img id="live-image" alt="Pantalla en vivo" />
     </div>
   </div>
 

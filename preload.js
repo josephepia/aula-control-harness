@@ -36,10 +36,10 @@ contextBridge.exposeInMainWorld('aulaControl', {
   reportScreenCaptureError: (reason) => ipcRenderer.invoke('report-screen-capture-error', reason),
   sendThumbnailFrame: (dataUrl) => ipcRenderer.invoke('send-thumbnail-frame', dataUrl),
   sendLiveFrame: (dataUrl) => ipcRenderer.invoke('send-live-frame', dataUrl),
-  startLiveWatch: (targetSocketId) => ipcRenderer.invoke('start-live-watch', targetSocketId),
-  stopLiveWatch: (targetSocketId) => ipcRenderer.invoke('stop-live-watch', targetSocketId),
+  openStudentScreenWindow: (socketId, hostname) =>
+    ipcRenderer.invoke('open-student-screen-window', { socketId, hostname }),
   fileCommand: (command) => ipcRenderer.invoke('file-command', command),
-  saveToDownloads: (filename, data) => ipcRenderer.invoke('save-to-downloads', { filename, data }),
+  saveDownloadedFile: (filename, data) => ipcRenderer.invoke('save-downloaded-file', { filename, data }),
   broadcastFile: (payload) => ipcRenderer.invoke('broadcast-file', payload),
   selectPaths: () => ipcRenderer.invoke('select-paths'),
   getPathForFile: (file) => webUtils.getPathForFile(file),
