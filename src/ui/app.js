@@ -82,6 +82,8 @@
 
   const liveModal = $('live-modal');
   const liveVideo = $('live-video');
+  const liveTitle = $('live-title');
+  const liveStatus = $('live-status');
   const btnCloseLive = $('btn-close-live');
 
   const filesModal = $('files-modal');
@@ -247,12 +249,12 @@
       </div>
       <div class="thumbnail">${thumbContent}</div>
       <div class="student-card-actions">
-        <button class="btn btn-live" data-action="live">🔴 Ver en vivo</button>
+        <button class="btn btn-live" data-action="live">🖥️ Ver pantalla</button>
         <button class="btn btn-secondary" data-action="files">📁 Archivos</button>
       </div>
     `;
 
-    card.querySelector('[data-action="live"]').addEventListener('click', () => startLiveView(student.socketId));
+    card.querySelector('[data-action="live"]').addEventListener('click', () => startLiveView(student));
     card.querySelector('[data-action="files"]').addEventListener('click', () => openFileManager(student.socketId));
 
     return card;
@@ -334,11 +336,12 @@
   }
 
   // ---------------------------------------------------------------------------
-  // WebRTC: maestro inicia la visualización en vivo
+  // WebRTC: maestro inicia la visualización en vivo (modal flotante amplio)
   // ---------------------------------------------------------------------------
-  async function startLiveView(socketId) {
+  async function startLiveView(student) {
     closeLiveView();
 
+    const socketId = student.socketId;
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
@@ -352,6 +355,7 @@
 
     pc.ontrack = (event) => {
       liveVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
+      liveStatus.classList.add('hidden');
     };
 
     pc.onconnectionstatechange = () => {
@@ -364,7 +368,7 @@
       const offer = await pc.createOffer({ offerToReceiveVideo: true, offerToReceiveAudio: false });
       await pc.setLocalDescription(offer);
       await api.sendWebrtcSignal(socketId, { sdp: offer });
-      showLiveModal();
+      showLiveModal(student.hostname);
     } catch (err) {
       console.error('[ui] Error al iniciar la visualización:', err);
       closeLiveView();
@@ -380,21 +384,52 @@
     liveModal.classList.add('hidden');
   }
 
-  function showLiveModal() {
+  function showLiveModal(studentHostname) {
+    liveTitle.textContent = `🖥️ Pantalla: ${studentHostname || 'Estudiante'}`;
+    liveStatus.textContent = 'Solicitando pantalla del estudiante…';
+    liveStatus.classList.remove('hidden');
+    liveVideo.srcObject = null;
     liveModal.classList.remove('hidden');
   }
 
   // ---------------------------------------------------------------------------
   // WebRTC: estudiante responde compartiendo su pantalla
   // ---------------------------------------------------------------------------
+  /**
+   * Obtiene el flujo de pantalla del estudiante usando desktopCapturer de
+   * Electron (solicitado al proceso principal vía IPC) y getUserMedia con
+   * chromeMediaSource='desktop' + chromeMediaSourceId.
+   */
+  async function getStudentScreenStream() {
+    const sources = await api.getScreenSources();
+    if (!sources || sources.length === 0) {
+      throw new Error('No se encontraron pantallas para capturar.');
+    }
+
+    // Se captura la primera pantalla (la principal). Si el estudiante tiene
+    // varios monitores, este punto puede ampliarse con un selector de fuente.
+    const sourceId = sources[0].id;
+
+    return await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        mandatory: {
+          chromeMediaSource: 'desktop',
+          chromeMediaSourceId: sourceId,
+          maxFrameRate: 30
+        }
+      }
+    });
+  }
+
   async function startStudentShare(offerSdp) {
     await stopStudentShare();
 
     let stream;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      stream = await getStudentScreenStream();
     } catch (err) {
-      console.error('[ui] El estudiante canceló o no pudo compartir pantalla:', err);
+      console.error('[ui] El estudiante no pudo capturar su pantalla:', err);
       return;
     }
 

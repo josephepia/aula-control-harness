@@ -111,13 +111,14 @@
     </div>
   </div>
 
-  <!-- ===================== MODAL VISUALIZACIÓN EN VIVO ===================== -->
+  <!-- ===================== MODAL VISUALIZACIÓN EN VIVO (pantalla) ===================== -->
   <div id="live-modal" class="modal-overlay hidden">
-    <div class="modal modal-wide">
+    <div class="modal modal-wide modal-live">
       <div class="modal-header">
-        <h2>Pantalla en vivo</h2>
+        <h2 id="live-title">🖥️ Pantalla en vivo</h2>
         <button id="btn-close-live" class="btn btn-secondary btn-sm">Cerrar</button>
       </div>
+      <p id="live-status" class="muted">Solicitando pantalla del estudiante…</p>
       <video id="live-video" autoplay playsinline></video>
     </div>
   </div>

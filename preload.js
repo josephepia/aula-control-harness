@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('aulaControl', {
   getDnsDomains: () => ipcRenderer.invoke('get-dns-state'),
   addDnsDomain: (domain) => ipcRenderer.invoke('add-dns-domain', domain),
   removeDnsDomain: (domain) => ipcRenderer.invoke('remove-dns-domain', domain),
+  getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   sendWebrtcSignal: (targetSocketId, signal) =>
     ipcRenderer.invoke('send-webrtc-signal', { targetSocketId, signal }),
   fileCommand: (command) => ipcRenderer.invoke('file-command', command),

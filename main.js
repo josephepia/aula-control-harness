@@ -506,6 +506,24 @@ function registerIpcHandlers() {
     return await removeBlockedDomain(domain);
   });
 
+  // ---------- Captura de pantalla (desktopCapturer de Electron) ----------
+  ipcMain.handle('get-screen-sources', async () => {
+    try {
+      const sources = await desktopCapturer.getSources({
+        types: ['screen'],
+        thumbnailSize: { width: 320, height: 180 }
+      });
+      return sources.map((source) => ({
+        id: source.id,
+        name: source.name,
+        thumbnailDataUrl: source.thumbnail ? source.thumbnail.toDataURL() : null
+      }));
+    } catch (err) {
+      console.error('[main] Error al obtener fuentes de pantalla:', err.message);
+      return [];
+    }
+  });
+
   // ---------- Streaming WebRTC ----------
   ipcMain.handle('send-webrtc-signal', (event, payload) => {
     const targetSocketId = payload?.targetSocketId;

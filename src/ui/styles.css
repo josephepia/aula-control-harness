@@ -560,6 +560,15 @@ textarea:focus {
   max-height: 85vh;
 }
 
+.modal-live {
+  width: min(1100px, 92vw);
+  max-height: 90vh;
+}
+
+#live-status {
+  margin-top: -4px;
+}
+
 .modal h2 {
   font-size: 1.15rem;
 }
@@ -578,10 +587,12 @@ textarea:focus {
 
 #live-video {
   width: 100%;
-  max-height: 55vh;
+  max-height: 68vh;
+  min-height: 320px;
   background: #000;
   border-radius: 8px;
   border: 1px solid var(--border);
+  object-fit: contain;
 }
 
 /* ------------------------------------------------------------------ Archivos */
