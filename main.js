@@ -1,8 +1,9 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain } = require('electron');
+const { app, BrowserWindow, desktopCapturer, ipcMain, screen } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
 const crypto = require('crypto');
+const { exec } = require('child_process');
 const { io } = require('socket.io-client');
 
 const {
@@ -79,6 +80,31 @@ function hostsFilePath() {
     : '/etc/hosts';
 }
 
+/**
+ * Vacía la caché DNS del sistema operativo tras modificar el archivo hosts.
+ * Windows: `ipconfig /flushdns` · macOS: `dscacheutil -flushcache` + reinicio de mDNSResponder.
+ */
+function flushDnsCache() {
+  let command = null;
+  if (process.platform === 'win32') {
+    command = 'ipconfig /flushdns';
+  } else if (process.platform === 'darwin') {
+    command = 'dscacheutil -flushcache; killall -HUP mDNSResponder';
+  }
+
+  if (!command) {
+    return; // Linux/otros: sin comando estándar, se omite.
+  }
+
+  exec(command, (error, stdout, stderr) => {
+    if (error) {
+      console.error('[dns] Error al vaciar la caché DNS:', error.message);
+    } else if (stderr) {
+      console.warn('[dns] Aviso al vaciar la caché DNS:', stderr.trim());
+    }
+  });
+}
+
 async function applyDnsBlock(domain) {
   try {
     const filePath = hostsFilePath();
@@ -95,6 +121,7 @@ async function applyDnsBlock(domain) {
 
     const entry = `127.0.0.1 ${domain}\n`;
     await fs.promises.appendFile(filePath, entry);
+    flushDnsCache();
     return { success: true, message: `Dominio ${domain} bloqueado.` };
   } catch (err) {
     return { success: false, error: `No se pudo bloquear ${domain}: ${err.message}` };
@@ -112,6 +139,7 @@ async function removeDnsBlock(domain) {
       .join('\n');
 
     await fs.promises.writeFile(filePath, filtered, 'utf8');
+    flushDnsCache();
     return { success: true, message: `Bloqueo de ${domain} removido.` };
   } catch (err) {
     return { success: false, error: `No se pudo desbloquear ${domain}: ${err.message}` };
@@ -266,6 +294,10 @@ function connectToMaster(masterIp, masterPort) {
     await handleIncomingFileCommand(data);
   });
 
+  studentSocket.on('broadcast-file', async (payload) => {
+    await handleIncomingBroadcast(payload);
+  });
+
   studentSocket.on('disconnect', () => {
     connectedMasterUrl = null;
     pushToRenderer('radar-status', { status: 'searching' });
@@ -280,6 +312,18 @@ function connectToMaster(masterIp, masterPort) {
 // ---------------------------------------------------------------------------
 // Gestor de archivos remotos (estudiante ejecuta comandos fs locales)
 // ---------------------------------------------------------------------------
+/**
+ * Resuelve una ruta proveniente del Maestro contra el directorio personal del
+ * estudiante. Evita resolver rutas relativas contra el directorio del proyecto
+ * (causa de errores ENOENT).
+ */
+function resolveStudentPath(userPath) {
+  if (!userPath) {
+    return os.homedir();
+  }
+  return path.isAbsolute(userPath) ? userPath : path.join(os.homedir(), userPath);
+}
+
 async function handleIncomingFileCommand(data) {
   if (!data || !data.action) {
     return;
@@ -293,7 +337,7 @@ async function handleIncomingFileCommand(data) {
 
   try {
     if (data.action === 'list') {
-      const dirPath = data.path || os.homedir();
+      const dirPath = resolveStudentPath(data.path);
       const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
       response.result = entries
         .filter((entry) => !entry.name.startsWith('.'))
@@ -312,12 +356,12 @@ async function handleIncomingFileCommand(data) {
       if (!data.path) {
         throw new Error('Ruta de archivo no especificada.');
       }
-      response.result = await fs.promises.readFile(data.path, 'utf8');
+      response.result = await fs.promises.readFile(resolveStudentPath(data.path), 'utf8');
     } else if (data.action === 'write') {
       if (!data.path) {
         throw new Error('Ruta de archivo no especificada.');
       }
-      await fs.promises.writeFile(data.path, data.content || '', 'utf8');
+      await fs.promises.writeFile(resolveStudentPath(data.path), data.content || '', 'utf8');
       response.result = 'ok';
     } else {
       throw new Error(`Acción desconocida: ${data.action}`);
@@ -329,6 +373,81 @@ async function handleIncomingFileCommand(data) {
   if (studentSocket && studentSocket.connected) {
     studentSocket.emit('file-response', response);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Difusión masiva de archivos (Maestro -> todos los estudiantes)
+// ---------------------------------------------------------------------------
+/**
+ * Lee de forma recursiva un archivo o carpeta local y devuelve un payload
+ * listo para emitir por socket.io (cada archivo en base64).
+ */
+async function buildBroadcastPayload(localPath) {
+  const resolved = path.resolve(localPath);
+  const stat = await fs.promises.stat(resolved);
+  const files = [];
+
+  if (stat.isFile()) {
+    const data = await fs.promises.readFile(resolved);
+    files.push({ relPath: path.basename(resolved), data: data.toString('base64') });
+    return { rootName: path.basename(resolved), files };
+  }
+
+  if (stat.isDirectory()) {
+    await collectDirectoryFiles(resolved, resolved, files);
+    return { rootName: path.basename(resolved), files };
+  }
+
+  throw new Error('La ruta no es ni un archivo ni un directorio.');
+}
+
+async function collectDirectoryFiles(root, dir, files) {
+  const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      await collectDirectoryFiles(root, full, files);
+    } else if (entry.isFile()) {
+      const data = await fs.promises.readFile(full);
+      files.push({
+        relPath: path.relative(root, full),
+        data: data.toString('base64')
+      });
+    }
+  }
+}
+
+/**
+ * Escribe en el estudiante los archivos recibidos por difusión masiva,
+ * siempre bajo `os.homedir()/AulaControl/recibidos/<nombre>`.
+ */
+async function handleIncomingBroadcast(payload) {
+  if (!payload || !Array.isArray(payload.files)) {
+    return;
+  }
+
+  const baseDir = path.join(os.homedir(), 'AulaControl', 'recibidos', payload.rootName || 'archivos');
+  let written = 0;
+  const errors = [];
+
+  for (const file of payload.files) {
+    const targetPath = path.join(baseDir, file.relPath);
+    try {
+      await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.promises.writeFile(targetPath, Buffer.from(file.data, 'base64'));
+      written += 1;
+    } catch (err) {
+      errors.push(`${file.relPath}: ${err.message}`);
+    }
+  }
+
+  pushToRenderer('file-broadcast-received', {
+    success: errors.length === 0,
+    written,
+    total: payload.files.length,
+    destDir: baseDir,
+    error: errors.length ? errors.join('; ') : null
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +523,9 @@ function startTeacherMode() {
   });
   masterServer.on('file-response', (response) => {
     pushToRenderer('file-response', response);
+  });
+  masterServer.on('screen-capture-error', (payload) => {
+    pushToRenderer('screen-capture-error', payload);
   });
 
   masterServer.start().catch((err) => {
@@ -509,18 +631,39 @@ function registerIpcHandlers() {
   // ---------- Captura de pantalla (desktopCapturer de Electron) ----------
   ipcMain.handle('get-screen-sources', async () => {
     try {
+      const primaryDisplayId = screen.getPrimaryDisplay().id;
       const sources = await desktopCapturer.getSources({
         types: ['screen'],
         thumbnailSize: { width: 320, height: 180 }
       });
-      return sources.map((source) => ({
-        id: source.id,
-        name: source.name,
-        thumbnailDataUrl: source.thumbnail ? source.thumbnail.toDataURL() : null
-      }));
+
+      // Ordena la pantalla principal activa al inicio y marca cada fuente.
+      const mapped = sources
+        .map((source) => ({
+          id: source.id,
+          name: source.name,
+          displayId: source.display_id,
+          isPrimary: source.display_id === primaryDisplayId,
+          thumbnailDataUrl: source.thumbnail && source.thumbnail.getSize().width > 0
+            ? source.thumbnail.toDataURL()
+            : null
+        }))
+        .sort((a, b) => (a.isPrimary === b.isPrimary ? 0 : (a.isPrimary ? -1 : 1)));
+
+      if (mapped.length === 0) {
+        return {
+          sources: [],
+          error: 'No se detectaron pantallas. Revisa el permiso de grabación de pantalla del sistema operativo.'
+        };
+      }
+
+      return { sources: mapped, primaryDisplayId };
     } catch (err) {
       console.error('[main] Error al obtener fuentes de pantalla:', err.message);
-      return [];
+      return {
+        sources: [],
+        error: 'No se pudo acceder a la captura de pantalla. Revisa el permiso de grabación de pantalla del sistema operativo.'
+      };
     }
   });
 
@@ -576,6 +719,45 @@ function registerIpcHandlers() {
     }
 
     return { success: false, error: 'Solo disponible en modo maestro.' };
+  });
+
+  // ---------- Difusión masiva de archivos (Maestro -> todos los estudiantes) ----------
+  ipcMain.handle('broadcast-file', async (event, localPath) => {
+    const cleanPath = String(localPath || '').trim();
+    if (!cleanPath) {
+      return { success: false, error: 'Ruta local no especificada.' };
+    }
+    if (role !== 'teacher' || !masterServer) {
+      return { success: false, error: 'Solo disponible en modo maestro.' };
+    }
+
+    try {
+      const payload = await buildBroadcastPayload(cleanPath);
+      const studentCount = masterServer.connectedStudents.size;
+      if (studentCount === 0) {
+        return { success: false, error: 'No hay estudiantes conectados.' };
+      }
+      masterServer.io.emit('broadcast-file', payload);
+      return {
+        success: true,
+        files: payload.files.length,
+        rootName: payload.rootName,
+        students: studentCount
+      };
+    } catch (err) {
+      return { success: false, error: `No se pudo leer la ruta: ${err.message}` };
+    }
+  });
+
+  // ---------- Reporte de error de captura de pantalla (estudiante -> maestro) ----------
+  ipcMain.handle('report-screen-capture-error', (event, reason) => {
+    if (role === 'student' && studentSocket && studentSocket.connected) {
+      studentSocket.emit('screen-capture-error', {
+        reason: String(reason || 'Error de captura de pantalla.')
+      });
+      return { success: true };
+    }
+    return { success: false, error: 'No hay conexión activa.' };
   });
 }
 

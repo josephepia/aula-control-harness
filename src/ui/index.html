@@ -39,6 +39,10 @@
         <button id="btn-stop-share" class="btn btn-danger btn-sm">Detener</button>
       </div>
 
+      <div id="broadcast-notice" class="banner hidden">
+        <span id="broadcast-notice-text"></span>
+      </div>
+
       <div class="card chat-card">
         <div class="chat-header"><h3>Chat del aula</h3></div>
         <div id="chat-messages" class="chat-messages"></div>
@@ -81,6 +85,15 @@
             </div>
             <div id="dns-chips" class="dns-chips"></div>
             <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
+          </div>
+
+          <div class="card broadcast-card">
+            <div class="card-header"><h3>📦 Difusión Masiva de Archivos</h3></div>
+            <div class="dns-add-row">
+              <input id="broadcast-path" type="text" placeholder="Ruta local (archivo/carpeta)" autocomplete="off" />
+              <button id="btn-broadcast" class="btn">Enviar a todos</button>
+            </div>
+            <p id="broadcast-status" class="muted">Envía un archivo o carpeta a todos los estudiantes conectados.</p>
           </div>
 
           <div class="card chat-card">

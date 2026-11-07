@@ -531,6 +531,11 @@ textarea:focus {
   margin-top: 10px;
 }
 
+#broadcast-status {
+  margin-top: 10px;
+  font-size: 0.82rem;
+}
+
 /* ------------------------------------------------------------------ Modales */
 .modal-overlay {
   position: fixed;

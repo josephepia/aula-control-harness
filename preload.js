@@ -12,6 +12,8 @@ const VALID_EVENT_CHANNELS = new Set([
   'screen-frame-update',
   'webrtc-signal',
   'file-response',
+  'file-broadcast-received',
+  'screen-capture-error',
   'dns-command-result'
 ]);
 
@@ -27,9 +29,11 @@ contextBridge.exposeInMainWorld('aulaControl', {
   addDnsDomain: (domain) => ipcRenderer.invoke('add-dns-domain', domain),
   removeDnsDomain: (domain) => ipcRenderer.invoke('remove-dns-domain', domain),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
+  reportScreenCaptureError: (reason) => ipcRenderer.invoke('report-screen-capture-error', reason),
   sendWebrtcSignal: (targetSocketId, signal) =>
     ipcRenderer.invoke('send-webrtc-signal', { targetSocketId, signal }),
   fileCommand: (command) => ipcRenderer.invoke('file-command', command),
+  broadcastFile: (localPath) => ipcRenderer.invoke('broadcast-file', localPath),
 
   // ---------- Suscripción a eventos (main -> renderer) ----------
   // Devuelve una función para cancelar la suscripción.

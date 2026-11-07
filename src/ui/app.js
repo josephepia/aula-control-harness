@@ -53,6 +53,8 @@
   const btnRaiseHand = $('btn-raise-hand');
   const sharingBanner = $('sharing-banner');
   const btnStopShare = $('btn-stop-share');
+  const broadcastNotice = $('broadcast-notice');
+  const broadcastNoticeText = $('broadcast-notice-text');
   const chatMessages = $('chat-messages');
   const chatInput = $('chat-input');
   const btnSendChat = $('btn-send-chat');
@@ -68,6 +70,10 @@
   const dnsChips = $('dns-chips');
   const dnsEmpty = $('dns-empty');
   const dnsFeedback = $('dns-feedback');
+
+  const broadcastPath = $('broadcast-path');
+  const btnBroadcast = $('btn-broadcast');
+  const broadcastStatus = $('broadcast-status');
 
   const teacherChatMessages = $('teacher-chat-messages');
   const teacherChatInput = $('teacher-chat-input');
@@ -387,6 +393,7 @@
   function showLiveModal(studentHostname) {
     liveTitle.textContent = `🖥️ Pantalla: ${studentHostname || 'Estudiante'}`;
     liveStatus.textContent = 'Solicitando pantalla del estudiante…';
+    liveStatus.classList.remove('error-text');
     liveStatus.classList.remove('hidden');
     liveVideo.srcObject = null;
     liveModal.classList.remove('hidden');
@@ -401,14 +408,19 @@
    * chromeMediaSource='desktop' + chromeMediaSourceId.
    */
   async function getStudentScreenStream() {
-    const sources = await api.getScreenSources();
-    if (!sources || sources.length === 0) {
-      throw new Error('No se encontraron pantallas para capturar.');
+    const result = await api.getScreenSources();
+    if (result && result.error) {
+      throw new Error(result.error);
     }
 
-    // Se captura la primera pantalla (la principal). Si el estudiante tiene
-    // varios monitores, este punto puede ampliarse con un selector de fuente.
-    const sourceId = sources[0].id;
+    const sources = (result && result.sources) || [];
+    if (sources.length === 0) {
+      throw new Error('No se encontraron pantallas para capturar. Revisa el permiso de grabación de pantalla del sistema operativo.');
+    }
+
+    // Selecciona la pantalla principal activa (marcada por el proceso principal).
+    const primarySource = sources.find((source) => source.isPrimary) || sources[0];
+    const sourceId = primarySource.id;
 
     return await navigator.mediaDevices.getUserMedia({
       audio: false,
@@ -430,6 +442,10 @@
       stream = await getStudentScreenStream();
     } catch (err) {
       console.error('[ui] El estudiante no pudo capturar su pantalla:', err);
+      const reason = (err && err.message)
+        ? err.message
+        : 'Faltan permisos de grabación de pantalla en el sistema operativo.';
+      notifyCaptureError(reason);
       return;
     }
 
@@ -484,6 +500,18 @@
       studentStream = null;
     }
     sharingBanner.classList.add('hidden');
+  }
+
+  function showStudentNotice(text) {
+    broadcastNoticeText.textContent = text || '';
+    broadcastNotice.classList.remove('hidden');
+    clearTimeout(showStudentNotice._timer);
+    showStudentNotice._timer = setTimeout(() => broadcastNotice.classList.add('hidden'), 8000);
+  }
+
+  function notifyCaptureError(reason) {
+    showStudentNotice(`⚠️ ${reason}`);
+    api.reportScreenCaptureError(reason);
   }
 
   // ---------------------------------------------------------------------------
@@ -626,6 +654,31 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Difusión masiva de archivos (Maestro -> todos los estudiantes)
+  // ---------------------------------------------------------------------------
+  async function broadcastFileToStudents() {
+    const localPath = broadcastPath.value.trim();
+    if (!localPath) {
+      broadcastStatus.textContent = 'Escribe la ruta local de un archivo o carpeta.';
+      broadcastStatus.className = 'muted error-text';
+      return;
+    }
+
+    broadcastStatus.textContent = 'Enviando a todos los estudiantes…';
+    broadcastStatus.className = 'muted';
+
+    const result = await api.broadcastFile(localPath);
+    if (result && result.success) {
+      broadcastStatus.textContent = `Enviado: ${result.files} archivo(s) a ${result.students} estudiante(s).`;
+      broadcastStatus.className = 'muted';
+      broadcastPath.value = '';
+    } else {
+      broadcastStatus.textContent = result && result.error ? result.error : 'Error al enviar los archivos.';
+      broadcastStatus.className = 'muted error-text';
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Enrutado de señales WebRTC entrantes
   // ---------------------------------------------------------------------------
   function handleWebrtcSignal(fromSocketId, signal) {
@@ -681,6 +734,23 @@
       }
     });
 
+    api.on('file-broadcast-received', (info) => {
+      if (state.role === 'student') {
+        const text = info.success
+          ? `📥 Se recibieron ${info.written} archivo(s) del maestro en ${info.destDir}.`
+          : `⚠️ Error al recibir archivos: ${info.error}`;
+        showStudentNotice(text);
+      }
+    });
+
+    api.on('screen-capture-error', (payload) => {
+      if (state.role === 'teacher') {
+        liveStatus.textContent = `El estudiante "${payload.hostname || 'Desconocido'}" no pudo compartir pantalla: ${payload.reason}`;
+        liveStatus.classList.add('error-text');
+        liveStatus.classList.remove('hidden');
+      }
+    });
+
     api.on('dns-command-result', (result) => {
       if (state.role === 'student') {
         showToast(result.success ? result.message : result.error, result.success ? 'success' : 'error');
@@ -725,6 +795,10 @@
     btnAddDns.addEventListener('click', addDnsDomain);
     dnsInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addDnsDomain();
+    });
+    btnBroadcast.addEventListener('click', broadcastFileToStudents);
+    broadcastPath.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') broadcastFileToStudents();
     });
     btnTeacherSendChat.addEventListener('click', () => sendChatFrom(teacherChatInput));
     teacherChatInput.addEventListener('keydown', (e) => {

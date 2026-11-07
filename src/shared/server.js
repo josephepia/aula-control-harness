@@ -20,6 +20,7 @@ const { MASTER_PORT, getLocalIPv4Addresses } = require('./radar');
  *   - 'webrtc-signal'     (señal WebRTC dirigida al Maestro)
  *   - 'file-command'      (comando de gestor de archivos del Maestro)
  *   - 'file-response'     (respuesta de un estudiante al Maestro)
+ *   - 'screen-capture-error' (error de captura de pantalla de un estudiante)
  */
 class MasterServer extends EventEmitter {
   constructor({ instanceId, port = MASTER_PORT }) {
@@ -174,6 +175,15 @@ class MasterServer extends EventEmitter {
             error: data.error
           });
         }
+      });
+
+      // ---------- Error de captura de pantalla (estudiante -> Maestro) ----------
+      socket.on('screen-capture-error', (data = {}) => {
+        this.emit('screen-capture-error', {
+          studentSocketId: socket.id,
+          hostname: this.connectedStudents.get(socket.id)?.hostname || 'Desconocido',
+          reason: data.reason || 'Error de captura de pantalla.'
+        });
       });
 
       // ---------- Desconexión ----------
