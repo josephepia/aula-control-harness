@@ -1,0 +1,19 @@
+{
+  "name": "aula-control",
+  "version": "1.0.0",
+  "description": "Sistema de Control de Aula - Aplicación Electron (Maestro/Estudiante)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "author": "Aula Control",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5"
+  },
+  "devDependencies": {
+    "electron": "^30.1.0"
+  }
+}

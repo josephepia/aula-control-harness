@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Aula Control</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-logo">🖥️</span>
+      <h1>Aula Control</h1>
+      <span id="role-badge" class="badge badge-student">Estudiante</span>
+    </div>
+    <div class="topbar-info">
+      <span id="hostname-label" class="muted"></span>
+      <button id="btn-open-login" class="btn btn-secondary">Acceso Maestro</button>
+      <button id="btn-logout" class="btn btn-secondary hidden">Cerrar sesión Maestro</button>
+    </div>
+  </header>
+
+  <main id="main-content">
+    <!-- ===================== VISTA ESTUDIANTE (por defecto) ===================== -->
+    <section id="student-view" class="view">
+      <div class="card radar-card">
+        <div class="radar-status">
+          <span id="radar-dot" class="dot dot-searching"></span>
+          <div>
+            <h3>Radar UDP</h3>
+            <p id="radar-text" class="muted">Buscando maestro en la red local...</p>
+          </div>
+        </div>
+        <button id="btn-raise-hand" class="btn btn-hand">✋ Alzar la mano</button>
+      </div>
+
+      <div id="sharing-banner" class="banner hidden">
+        📡 Compartiendo pantalla en vivo con el maestro…
+        <button id="btn-stop-share" class="btn btn-danger btn-sm">Detener</button>
+      </div>
+
+      <div class="card chat-card">
+        <div class="chat-header"><h3>Chat del aula</h3></div>
+        <div id="chat-messages" class="chat-messages"></div>
+        <div class="chat-input-row">
+          <input id="chat-input" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
+          <button id="btn-send-chat" class="btn">Enviar</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== VISTA MAESTRO (admin) ===================== -->
+    <section id="teacher-view" class="view hidden">
+      <div class="card toolbar">
+        <div class="toolbar-group">
+          <button id="btn-refresh-list" class="btn">🔄 Refrescar lista</button>
+          <button id="btn-toggle-view" class="btn btn-secondary">⣿ Ver en lista</button>
+          <span id="student-count" class="muted"></span>
+        </div>
+        <div class="toolbar-group">
+          <input id="dns-input" type="text" placeholder="Dominio (ej. facebook.com)" autocomplete="off" />
+          <button id="btn-block-dns" class="btn btn-danger">Bloquear DNS</button>
+          <button id="btn-unblock-dns" class="btn btn-secondary">Desbloquear</button>
+        </div>
+      </div>
+
+      <div id="dns-feedback" class="toast hidden"></div>
+
+      <div id="students-container" class="students-grid"></div>
+      <div id="students-empty" class="empty-state hidden">
+        <p>No hay estudiantes conectados en este momento.</p>
+        <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===================== MODAL LOGIN ===================== -->
+  <div id="login-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h2>Acceso Maestro</h2>
+      <p class="muted">Ingresa las credenciales de administrador.</p>
+      <input id="login-user" type="text" placeholder="Usuario" autocomplete="off" />
+      <input id="login-pass" type="password" placeholder="Contraseña" autocomplete="off" />
+      <p id="login-error" class="error-text hidden">Credenciales incorrectas.</p>
+      <div class="modal-actions">
+        <button id="btn-cancel-login" class="btn btn-secondary">Cancelar</button>
+        <button id="btn-submit-login" class="btn">Ingresar</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL VISUALIZACIÓN EN VIVO ===================== -->
+  <div id="live-modal" class="modal-overlay hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2>Pantalla en vivo</h2>
+        <button id="btn-close-live" class="btn btn-secondary btn-sm">Cerrar</button>
+      </div>
+      <video id="live-video" autoplay playsinline></video>
+    </div>
+  </div>
+
+  <!-- ===================== MODAL GESTOR DE ARCHIVOS ===================== -->
+  <div id="files-modal" class="modal-overlay hidden">
+    <div class="modal modal-wide">
+      <div class="modal-header">
+        <h2>Gestor de archivos remoto</h2>
+        <button id="btn-close-files" class="btn btn-secondary btn-sm">Cerrar</button>
+      </div>
+      <div class="files-path-row">
+        <input id="files-path" type="text" placeholder="/ruta/al/directorio" autocomplete="off" />
+        <button id="btn-files-list" class="btn">Listar</button>
+        <button id="btn-files-up" class="btn btn-secondary">⬆ Subir</button>
+      </div>
+      <div class="files-body">
+        <ul id="files-listing" class="files-listing"></ul>
+        <textarea id="files-editor" class="files-editor hidden" placeholder="Contenido del archivo…"></textarea>
+      </div>
+      <p id="files-status" class="muted"></p>
+      <div class="modal-actions hidden" id="files-editor-actions">
+        <button id="btn-files-save" class="btn">Guardar archivo</button>
+        <button id="btn-files-close-editor" class="btn btn-secondary">Volver</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
