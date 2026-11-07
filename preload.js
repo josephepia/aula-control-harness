@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 /**
  * Puente seguro entre el proceso de renderizado (UI) y el proceso principal.
@@ -30,10 +30,14 @@ contextBridge.exposeInMainWorld('aulaControl', {
   removeDnsDomain: (domain) => ipcRenderer.invoke('remove-dns-domain', domain),
   getScreenSources: () => ipcRenderer.invoke('get-screen-sources'),
   reportScreenCaptureError: (reason) => ipcRenderer.invoke('report-screen-capture-error', reason),
+  sendThumbnailFrame: (dataUrl) => ipcRenderer.invoke('send-thumbnail-frame', dataUrl),
   sendWebrtcSignal: (targetSocketId, signal) =>
     ipcRenderer.invoke('send-webrtc-signal', { targetSocketId, signal }),
   fileCommand: (command) => ipcRenderer.invoke('file-command', command),
-  broadcastFile: (localPath) => ipcRenderer.invoke('broadcast-file', localPath),
+  saveToDownloads: (filename, data) => ipcRenderer.invoke('save-to-downloads', { filename, data }),
+  broadcastFile: (payload) => ipcRenderer.invoke('broadcast-file', payload),
+  selectPaths: () => ipcRenderer.invoke('select-paths'),
+  getPathForFile: (file) => webUtils.getPathForFile(file),
 
   // ---------- Suscripción a eventos (main -> renderer) ----------
   // Devuelve una función para cancelar la suscripción.

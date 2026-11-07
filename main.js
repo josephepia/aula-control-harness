@@ -1,4 +1,4 @@
-const { app, BrowserWindow, desktopCapturer, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, desktopCapturer, ipcMain, screen, dialog } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -35,7 +35,6 @@ let radarListener = null;   // Modo estudiante: descubre al maestro
 let radarBroadcaster = null; // Modo maestro: anuncia su presencia
 let masterServer = null;    // Modo maestro: servidor Express + Socket.io
 let studentSocket = null;   // Modo estudiante: cliente socket.io hacia el maestro
-let screenTimer = null;     // Temporizador de miniaturas de pantalla (estudiante)
 let connectedMasterUrl = null; // URL del maestro al que está conectado el estudiante
 
 const chatHistory = [];
@@ -193,38 +192,13 @@ async function removeBlockedDomain(domain) {
 }
 
 // ---------------------------------------------------------------------------
-// Captura de miniaturas de pantalla (estudiante, cada ~2 segundos)
+// Captura de miniaturas de pantalla
 // ---------------------------------------------------------------------------
-function startScreenThumbnails() {
-  stopScreenThumbnails();
-
-  screenTimer = setInterval(async () => {
-    if (!studentSocket || !studentSocket.connected) {
-      return;
-    }
-
-    try {
-      const sources = await desktopCapturer.getSources({
-        types: ['screen'],
-        thumbnailSize: { width: 320, height: 180 }
-      });
-
-      if (sources.length > 0) {
-        const dataUrl = sources[0].thumbnail.toDataURL();
-        studentSocket.emit('student-screen-frame', { dataUrl });
-      }
-    } catch (err) {
-      // La captura puede fallar sin bloquear la aplicación.
-    }
-  }, 2000);
-}
-
-function stopScreenThumbnails() {
-  if (screenTimer) {
-    clearInterval(screenTimer);
-    screenTimer = null;
-  }
-}
+// Las miniaturas de la grilla se generan ahora en el RENDERER del estudiante:
+// el stream de pantalla se dibuja en un <canvas> y se convierte a JPEG de
+// calidad media; el fotograma llega aquí vía IPC 'send-thumbnail-frame' y se
+// reenvía por socket.io. Ver `src/ui/app.js` (captura de fondo) y el handler
+// 'send-thumbnail-frame' más abajo.
 
 // ---------------------------------------------------------------------------
 // Conexión del estudiante al Maestro (socket.io-client)
@@ -363,6 +337,25 @@ async function handleIncomingFileCommand(data) {
       }
       await fs.promises.writeFile(resolveStudentPath(data.path), data.content || '', 'utf8');
       response.result = 'ok';
+    } else if (data.action === 'download') {
+      if (!data.path) {
+        throw new Error('Ruta de archivo no especificada.');
+      }
+      const filePath = resolveStudentPath(data.path);
+      const buffer = await fs.promises.readFile(filePath);
+      response.result = {
+        filename: path.basename(filePath),
+        data: buffer.toString('base64')
+      };
+    } else if (data.action === 'upload') {
+      if (!data.filename) {
+        throw new Error('Nombre de archivo no especificado.');
+      }
+      const targetDir = resolveStudentPath(data.path || '');
+      const targetPath = path.join(targetDir, data.filename);
+      await fs.promises.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.promises.writeFile(targetPath, Buffer.from(data.data || '', 'base64'));
+      response.result = 'ok';
     } else {
       throw new Error(`Acción desconocida: ${data.action}`);
     }
@@ -382,23 +375,24 @@ async function handleIncomingFileCommand(data) {
  * Lee de forma recursiva un archivo o carpeta local y devuelve un payload
  * listo para emitir por socket.io (cada archivo en base64).
  */
-async function buildBroadcastPayload(localPath) {
-  const resolved = path.resolve(localPath);
-  const stat = await fs.promises.stat(resolved);
+async function buildBroadcastPayload(paths) {
   const files = [];
 
-  if (stat.isFile()) {
-    const data = await fs.promises.readFile(resolved);
-    files.push({ relPath: path.basename(resolved), data: data.toString('base64') });
-    return { rootName: path.basename(resolved), files };
+  for (const p of paths) {
+    const resolved = path.resolve(p);
+    const stat = await fs.promises.stat(resolved);
+
+    if (stat.isFile()) {
+      const data = await fs.promises.readFile(resolved);
+      files.push({ relPath: path.basename(resolved), data: data.toString('base64') });
+    } else if (stat.isDirectory()) {
+      await collectDirectoryFiles(resolved, resolved, files);
+    } else {
+      throw new Error(`La ruta "${resolved}" no es ni un archivo ni un directorio.`);
+    }
   }
 
-  if (stat.isDirectory()) {
-    await collectDirectoryFiles(resolved, resolved, files);
-    return { rootName: path.basename(resolved), files };
-  }
-
-  throw new Error('La ruta no es ni un archivo ni un directorio.');
+  return { files };
 }
 
 async function collectDirectoryFiles(root, dir, files) {
@@ -426,7 +420,10 @@ async function handleIncomingBroadcast(payload) {
     return;
   }
 
-  const baseDir = path.join(os.homedir(), 'AulaControl', 'recibidos', payload.rootName || 'archivos');
+  const destRel = String(payload.destination || '').trim();
+  const baseDir = destRel
+    ? path.join(os.homedir(), destRel)
+    : path.join(os.homedir(), 'AulaControl', 'recibidos');
   let written = 0;
   const errors = [];
 
@@ -457,7 +454,6 @@ function startStudentMode() {
   role = 'student';
 
   // Detener artefactos del modo maestro.
-  stopScreenThumbnails();
   if (radarBroadcaster) {
     radarBroadcaster.stop();
     radarBroadcaster = null;
@@ -501,7 +497,6 @@ function startTeacherMode() {
     studentSocket = null;
   }
   connectedMasterUrl = null;
-  stopScreenThumbnails();
 
   // Iniciar servidor maestro (Express + Socket.io en puerto 3000).
   masterServer = new MasterServer({ instanceId, port: MASTER_PORT });
@@ -713,7 +708,9 @@ function registerIpcHandlers() {
         requestId,
         action,
         path: command.path,
-        content: command.content
+        content: command.content,
+        filename: command.filename,
+        data: command.data
       });
       return { success: true, requestId };
     }
@@ -722,31 +719,77 @@ function registerIpcHandlers() {
   });
 
   // ---------- Difusión masiva de archivos (Maestro -> todos los estudiantes) ----------
-  ipcMain.handle('broadcast-file', async (event, localPath) => {
-    const cleanPath = String(localPath || '').trim();
-    if (!cleanPath) {
-      return { success: false, error: 'Ruta local no especificada.' };
+  ipcMain.handle('broadcast-file', async (event, payload) => {
+    const paths = (payload && Array.isArray(payload.paths)) ? payload.paths : [];
+    const destination = String((payload && payload.destination) || '').trim();
+
+    if (paths.length === 0) {
+      return { success: false, error: 'No se seleccionaron archivos o carpetas.' };
     }
     if (role !== 'teacher' || !masterServer) {
       return { success: false, error: 'Solo disponible en modo maestro.' };
     }
 
     try {
-      const payload = await buildBroadcastPayload(cleanPath);
+      const broadcastPayload = await buildBroadcastPayload(paths);
       const studentCount = masterServer.connectedStudents.size;
       if (studentCount === 0) {
         return { success: false, error: 'No hay estudiantes conectados.' };
       }
-      masterServer.io.emit('broadcast-file', payload);
+      masterServer.io.emit('broadcast-file', {
+        destination,
+        files: broadcastPayload.files
+      });
       return {
         success: true,
-        files: payload.files.length,
-        rootName: payload.rootName,
-        students: studentCount
+        files: broadcastPayload.files.length,
+        students: studentCount,
+        destination
       };
     } catch (err) {
       return { success: false, error: `No se pudo leer la ruta: ${err.message}` };
     }
+  });
+
+  // ---------- Selección de rutas (archivos/carpetas) para difusión masiva ----------
+  ipcMain.handle('select-paths', async () => {
+    if (role !== 'teacher') {
+      return { success: false, paths: [] };
+    }
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Seleccionar archivos o carpetas',
+      properties: ['openFile', 'openDirectory', 'multiSelections']
+    });
+    if (result.canceled) {
+      return { success: false, paths: [] };
+    }
+    return { success: true, paths: result.filePaths };
+  });
+
+  // ---------- Guardar archivo descargado en la carpeta de descargas ----------
+  ipcMain.handle('save-to-downloads', async (event, payload) => {
+    const filename = path.basename(String((payload && payload.filename) || 'archivo'));
+    const data = (payload && payload.data) || '';
+    if (!data) {
+      return { success: false, error: 'Sin datos para guardar.' };
+    }
+    try {
+      const downloadsDir = app.getPath('downloads');
+      const targetPath = path.join(downloadsDir, filename);
+      await fs.promises.writeFile(targetPath, Buffer.from(data, 'base64'));
+      return { success: true, path: targetPath };
+    } catch (err) {
+      return { success: false, error: `No se pudo guardar: ${err.message}` };
+    }
+  });
+
+  // ---------- Miniatura de pantalla generada en el renderer (canvas/JPEG) ----------
+  ipcMain.handle('send-thumbnail-frame', (event, dataUrl) => {
+    if (role === 'student' && studentSocket && studentSocket.connected) {
+      studentSocket.emit('student-screen-frame', { dataUrl: String(dataUrl || '') });
+      return { success: true };
+    }
+    return { success: false, error: 'No hay conexión activa.' };
   });
 
   // ---------- Reporte de error de captura de pantalla (estudiante -> maestro) ----------
@@ -805,7 +848,6 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  stopScreenThumbnails();
   if (radarListener) {
     radarListener.stop();
   }

@@ -159,7 +159,9 @@ class MasterServer extends EventEmitter {
             requestId: data.requestId,
             action: data.action,
             path: data.path,
-            content: data.content
+            content: data.content,
+            filename: data.filename,
+            data: data.data
           });
         }
       });

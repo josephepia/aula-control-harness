@@ -57,6 +57,10 @@
     <section id="teacher-view" class="view hidden">
       <div class="card toolbar">
         <div class="toolbar-group">
+          <button id="tab-students" class="btn tab-btn active">👥 Estudiantes</button>
+          <button id="tab-broadcast" class="btn btn-secondary tab-btn">📦 Difusión Masiva</button>
+        </div>
+        <div class="toolbar-group" id="students-toolbar">
           <button id="btn-refresh-list" class="btn">🔄 Refrescar lista</button>
           <button id="btn-toggle-view" class="btn btn-secondary">⣿ Ver en lista</button>
           <span id="student-count" class="muted"></span>
@@ -65,44 +69,61 @@
 
       <div id="dns-feedback" class="toast hidden"></div>
 
-      <div class="teacher-main">
-        <!-- Columna izquierda: lista de estudiantes -->
-        <div class="teacher-left">
-          <div id="students-container" class="students-grid"></div>
-          <div id="students-empty" class="empty-state hidden">
-            <p>No hay estudiantes conectados en este momento.</p>
-            <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+      <!-- Pestaña: Estudiantes -->
+      <div id="students-tab" class="tab-panel">
+        <div class="teacher-main">
+          <!-- Columna izquierda: lista de estudiantes -->
+          <div class="teacher-left">
+            <div id="students-container" class="students-grid"></div>
+            <div id="students-empty" class="empty-state hidden">
+              <p>No hay estudiantes conectados en este momento.</p>
+              <p class="muted">Los estudiantes se conectarán automáticamente al detectar el radar UDP.</p>
+            </div>
+          </div>
+
+          <!-- Columna derecha: bloqueo DNS + chat en vivo (siempre visibles) -->
+          <div class="teacher-sidebar">
+            <div class="card dns-card">
+              <div class="card-header"><h3>🔒 Bloqueo DNS</h3></div>
+              <div class="dns-add-row">
+                <input id="dns-input" type="text" placeholder="Agregar dominio (ej. facebook.com)" autocomplete="off" />
+                <button id="btn-add-dns" class="btn">Agregar</button>
+              </div>
+              <div id="dns-chips" class="dns-chips"></div>
+              <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
+            </div>
+
+            <div class="card chat-card">
+              <div class="card-header"><h3>💬 Chat del aula</h3></div>
+              <div id="teacher-chat-messages" class="chat-messages"></div>
+              <div class="chat-input-row">
+                <input id="teacher-chat-input" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
+                <button id="btn-teacher-send-chat" class="btn">Enviar</button>
+              </div>
+            </div>
           </div>
         </div>
+      </div>
 
-        <!-- Columna derecha: bloqueo DNS + chat en vivo (siempre visibles) -->
-        <div class="teacher-sidebar">
-          <div class="card dns-card">
-            <div class="card-header"><h3>🔒 Bloqueo DNS</h3></div>
-            <div class="dns-add-row">
-              <input id="dns-input" type="text" placeholder="Agregar dominio (ej. facebook.com)" autocomplete="off" />
-              <button id="btn-add-dns" class="btn">Agregar</button>
+      <!-- Pestaña: Difusión Masiva (pantalla completa) -->
+      <div id="broadcast-tab" class="tab-panel hidden">
+        <div class="broadcast-layout">
+          <div class="card broadcast-origin">
+            <div class="card-header"><h3>📤 Origen (Archivos a enviar)</h3></div>
+            <div id="broadcast-dropzone" class="dropzone">
+              <p>Arrastra y suelta archivos o carpetas aquí</p>
+              <button id="btn-select-paths" class="btn btn-secondary">📂 Seleccionar Archivos/Carpetas</button>
             </div>
-            <div id="dns-chips" class="dns-chips"></div>
-            <p id="dns-empty" class="muted">No hay dominios bloqueados.</p>
+            <ul id="broadcast-files" class="broadcast-files"></ul>
+            <p id="broadcast-files-empty" class="muted">No hay elementos seleccionados.</p>
           </div>
 
-          <div class="card broadcast-card">
-            <div class="card-header"><h3>📦 Difusión Masiva de Archivos</h3></div>
-            <div class="dns-add-row">
-              <input id="broadcast-path" type="text" placeholder="Ruta local (archivo/carpeta)" autocomplete="off" />
-              <button id="btn-broadcast" class="btn">Enviar a todos</button>
-            </div>
-            <p id="broadcast-status" class="muted">Envía un archivo o carpeta a todos los estudiantes conectados.</p>
-          </div>
-
-          <div class="card chat-card">
-            <div class="card-header"><h3>💬 Chat del aula</h3></div>
-            <div id="teacher-chat-messages" class="chat-messages"></div>
-            <div class="chat-input-row">
-              <input id="teacher-chat-input" type="text" placeholder="Escribe un mensaje…" autocomplete="off" />
-              <button id="btn-teacher-send-chat" class="btn">Enviar</button>
-            </div>
+          <div class="card broadcast-destination">
+            <div class="card-header"><h3>📥 Destino en Estudiantes</h3></div>
+            <label class="muted" for="broadcast-dest">Ruta de destino en los estudiantes</label>
+            <input id="broadcast-dest" type="text" placeholder="ej. Documents/Clase_Hoy" autocomplete="off" />
+            <button id="btn-broadcast-send" class="btn">🚀 Enviar a todos los estudiantes</button>
+            <p id="broadcast-status" class="muted"></p>
           </div>
         </div>
       </div>
@@ -147,6 +168,8 @@
         <input id="files-path" type="text" placeholder="/ruta/al/directorio" autocomplete="off" />
         <button id="btn-files-list" class="btn">Listar</button>
         <button id="btn-files-up" class="btn btn-secondary">⬆ Subir</button>
+        <button id="btn-files-upload" class="btn btn-secondary">⬆ Subir archivo</button>
+        <input id="upload-file-input" type="file" class="hidden" />
       </div>
       <div class="files-body">
         <ul id="files-listing" class="files-listing"></ul>

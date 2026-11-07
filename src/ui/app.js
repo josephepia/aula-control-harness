@@ -21,11 +21,19 @@
   let handRaised = false;
   let students = [];
   let blockedDomains = [];
+  let broadcastSelectedPaths = [];
+  let activeTeacherTab = 'students';
 
   // Streaming WebRTC
   const livePeers = new Map(); // Maestro: studentSocketId -> RTCPeerConnection
   let studentPc = null;        // Estudiante: conexión WebRTC hacia el maestro
   let studentStream = null;    // Estudiante: flujo de pantalla compartida
+
+  // Captura de fondo (miniaturas por canvas/JPEG + reuso en WebRTC)
+  let backgroundStream = null;
+  let thumbnailTimer = null;
+  let thumbnailVideo = null;
+  const thumbnailCanvas = document.createElement('canvas');
 
   // Gestor de archivos remoto
   const fileManager = {
@@ -71,8 +79,18 @@
   const dnsEmpty = $('dns-empty');
   const dnsFeedback = $('dns-feedback');
 
-  const broadcastPath = $('broadcast-path');
-  const btnBroadcast = $('btn-broadcast');
+  const tabStudents = $('tab-students');
+  const tabBroadcast = $('tab-broadcast');
+  const studentsTab = $('students-tab');
+  const broadcastTab = $('broadcast-tab');
+  const studentsToolbar = $('students-toolbar');
+
+  const broadcastDropzone = $('broadcast-dropzone');
+  const btnSelectPaths = $('btn-select-paths');
+  const broadcastFiles = $('broadcast-files');
+  const broadcastFilesEmpty = $('broadcast-files-empty');
+  const broadcastDest = $('broadcast-dest');
+  const btnBroadcastSend = $('btn-broadcast-send');
   const broadcastStatus = $('broadcast-status');
 
   const teacherChatMessages = $('teacher-chat-messages');
@@ -103,6 +121,8 @@
   const btnFilesSave = $('btn-files-save');
   const btnFilesCloseEditor = $('btn-files-close-editor');
   const btnCloseFiles = $('btn-close-files');
+  const btnFilesUpload = $('btn-files-upload');
+  const uploadFileInput = $('upload-file-input');
 
   // ---------------------------------------------------------------------------
   // Utilidades
@@ -203,6 +223,7 @@
     btnLogout.classList.add('hidden');
     closeLiveView();
     stopStudentShare();
+    stopBackgroundCapture();
   }
 
   function switchToTeacherView() {
@@ -213,6 +234,9 @@
     teacherView.classList.remove('hidden');
     btnOpenLogin.classList.add('hidden');
     btnLogout.classList.remove('hidden');
+    stopStudentShare();
+    stopBackgroundCapture();
+    switchTeacherTab('students');
     refreshStudentList();
     loadDnsDomains();
   }
@@ -434,21 +458,94 @@
     });
   }
 
+  // --- Captura de fondo para miniaturas (canvas -> JPEG) y reuso en WebRTC ---
+  async function startBackgroundCapture() {
+    if (backgroundStream) {
+      return;
+    }
+    try {
+      backgroundStream = await getStudentScreenStream();
+      const track = backgroundStream.getVideoTracks()[0];
+      if (track) {
+        track.addEventListener('ended', () => stopBackgroundCapture());
+      }
+      setupThumbnailVideo(backgroundStream);
+      startThumbnailLoop();
+    } catch (err) {
+      console.error('[ui] No se pudo iniciar la captura de fondo:', err);
+    }
+  }
+
+  function setupThumbnailVideo(stream) {
+    if (!thumbnailVideo) {
+      thumbnailVideo = document.createElement('video');
+      thumbnailVideo.muted = true;
+      thumbnailVideo.playsInline = true;
+      thumbnailVideo.style.display = 'none';
+      document.body.appendChild(thumbnailVideo);
+    }
+    if (thumbnailVideo.srcObject !== stream) {
+      thumbnailVideo.srcObject = stream;
+      thumbnailVideo.play().catch(() => {});
+    }
+  }
+
+  function startThumbnailLoop() {
+    stopThumbnailLoop();
+    thumbnailTimer = setInterval(() => {
+      const frame = captureThumbnailFrame();
+      if (frame) {
+        api.sendThumbnailFrame(frame);
+      }
+    }, 2000);
+  }
+
+  function stopThumbnailLoop() {
+    if (thumbnailTimer) {
+      clearInterval(thumbnailTimer);
+      thumbnailTimer = null;
+    }
+  }
+
+  function captureThumbnailFrame() {
+    if (!thumbnailVideo || !thumbnailVideo.videoWidth) {
+      return null;
+    }
+    const scale = Math.min(1, 320 / thumbnailVideo.videoWidth);
+    const width = Math.max(1, Math.round(thumbnailVideo.videoWidth * scale));
+    const height = Math.max(1, Math.round(thumbnailVideo.videoHeight * scale));
+    thumbnailCanvas.width = width;
+    thumbnailCanvas.height = height;
+    thumbnailCanvas.getContext('2d').drawImage(thumbnailVideo, 0, 0, width, height);
+    return thumbnailCanvas.toDataURL('image/jpeg', 0.6);
+  }
+
+  function stopBackgroundCapture() {
+    stopThumbnailLoop();
+    if (backgroundStream) {
+      for (const track of backgroundStream.getTracks()) {
+        track.stop();
+      }
+      backgroundStream = null;
+    }
+    if (thumbnailVideo) {
+      thumbnailVideo.srcObject = null;
+    }
+  }
+
   async function startStudentShare(offerSdp) {
     await stopStudentShare();
 
-    let stream;
-    try {
-      stream = await getStudentScreenStream();
-    } catch (err) {
-      console.error('[ui] El estudiante no pudo capturar su pantalla:', err);
-      const reason = (err && err.message)
-        ? err.message
-        : 'Faltan permisos de grabación de pantalla en el sistema operativo.';
-      notifyCaptureError(reason);
+    // Reutiliza la captura de fondo (miniaturas) si existe; si no, la crea.
+    if (!backgroundStream) {
+      await startBackgroundCapture();
+    }
+    if (!backgroundStream) {
+      notifyCaptureError('No se pudo iniciar la captura de pantalla.');
       return;
     }
 
+    const stream = backgroundStream;
     studentStream = stream;
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
@@ -471,11 +568,6 @@
       }
     };
 
-    const videoTrack = stream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.addEventListener('ended', () => stopStudentShare());
-    }
-
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offerSdp));
       const answer = await pc.createAnswer();
@@ -493,12 +585,7 @@
       try { studentPc.close(); } catch (err) { /* ignore */ }
       studentPc = null;
     }
-    if (studentStream) {
-      for (const track of studentStream.getTracks()) {
-        track.stop();
-      }
-      studentStream = null;
-    }
+    studentStream = null; // No detiene tracks: pertenecen a la captura de fondo.
     sharingBanner.classList.add('hidden');
   }
 
@@ -569,16 +656,44 @@
 
     for (const entry of entries) {
       const li = document.createElement('li');
+      li.className = 'file-entry';
       const icon = entry.isDirectory ? '📁' : '📄';
-      li.innerHTML = `<span>${icon}</span><span>${escapeHtml(entry.name)}</span>`;
-      li.addEventListener('click', () => {
-        const targetPath = joinPath(fileManager.currentPath, entry.name);
-        if (entry.isDirectory) {
-          listRemoteDirectory(targetPath);
-        } else {
+      li.innerHTML = `<span>${icon}</span><span class="file-name">${escapeHtml(entry.name)}</span>`;
+
+      const targetPath = joinPath(fileManager.currentPath, entry.name);
+
+      if (entry.isDirectory) {
+        li.addEventListener('click', () => listRemoteDirectory(targetPath));
+      } else {
+        // Archivo: clic = descargar; botones = editar / descargar.
+        const actions = document.createElement('span');
+        actions.className = 'file-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'file-action';
+        editBtn.title = 'Editar';
+        editBtn.textContent = '✏️';
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
           readRemoteFile(targetPath);
-        }
-      });
+        });
+
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'file-action';
+        dlBtn.title = 'Descargar';
+        dlBtn.textContent = '⬇️';
+        dlBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          downloadRemoteFile(targetPath);
+        });
+
+        actions.appendChild(editBtn);
+        actions.appendChild(dlBtn);
+        li.appendChild(actions);
+
+        li.addEventListener('click', () => downloadRemoteFile(targetPath));
+      }
+
       filesListing.appendChild(li);
     }
   }
@@ -643,6 +758,82 @@
     setFilesStatus('', false);
   }
 
+  async function downloadRemoteFile(filePath) {
+    setFilesStatus(`Descargando "${filePath}"…`, false);
+
+    const result = await api.fileCommand({
+      targetSocketId: fileManager.studentSocketId,
+      action: 'download',
+      path: filePath
+    });
+
+    if (!result || !result.success) {
+      setFilesStatus(result && result.error ? result.error : 'Error al descargar.', true);
+      return;
+    }
+
+    const response = await waitForFileResponse(result.requestId);
+    if (response.error) {
+      setFilesStatus(response.error, true);
+      return;
+    }
+
+    const saved = await api.saveToDownloads(response.result.filename, response.result.data);
+    if (saved && saved.success) {
+      setFilesStatus(`Descargado en ${saved.path}`, false);
+    } else {
+      setFilesStatus(saved && saved.error ? saved.error : 'Error al guardar la descarga.', true);
+    }
+  }
+
+  function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || '');
+        const base64 = dataUrl.split(',')[1] || '';
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error('No se pudo leer el archivo local.'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function handleUploadFile() {
+    const file = uploadFileInput.files[0];
+    uploadFileInput.value = '';
+    if (!file) {
+      return;
+    }
+
+    setFilesStatus(`Subiendo "${file.name}"…`, false);
+    try {
+      const data = await readFileAsBase64(file);
+      const result = await api.fileCommand({
+        targetSocketId: fileManager.studentSocketId,
+        action: 'upload',
+        path: fileManager.currentPath,
+        filename: file.name,
+        data
+      });
+
+      if (!result || !result.success) {
+        setFilesStatus(result && result.error ? result.error : 'Error al subir.', true);
+        return;
+      }
+
+      const response = await waitForFileResponse(result.requestId);
+      if (response.error) {
+        setFilesStatus(response.error, true);
+      } else {
+        setFilesStatus(`"${file.name}" subido correctamente.`, false);
+        await listRemoteDirectory(fileManager.currentPath);
+      }
+    } catch (err) {
+      setFilesStatus(err && err.message ? err.message : 'Error al subir el archivo.', true);
+    }
+  }
+
   async function openFileManager(studentSocketId) {
     fileManager.studentSocketId = studentSocketId;
     fileManager.currentPath = '';
@@ -654,26 +845,103 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Pestañas del Maestro
+  // ---------------------------------------------------------------------------
+  function switchTeacherTab(tab) {
+    activeTeacherTab = tab;
+    const isStudents = tab === 'students';
+
+    studentsTab.classList.toggle('hidden', !isStudents);
+    broadcastTab.classList.toggle('hidden', isStudents);
+    studentsToolbar.classList.toggle('hidden', !isStudents);
+
+    tabStudents.classList.toggle('active', isStudents);
+    tabStudents.classList.toggle('btn-secondary', !isStudents);
+    tabBroadcast.classList.toggle('active', !isStudents);
+    tabBroadcast.classList.toggle('btn-secondary', isStudents);
+  }
+
+  // ---------------------------------------------------------------------------
   // Difusión masiva de archivos (Maestro -> todos los estudiantes)
   // ---------------------------------------------------------------------------
-  async function broadcastFileToStudents() {
-    const localPath = broadcastPath.value.trim();
-    if (!localPath) {
-      broadcastStatus.textContent = 'Escribe la ruta local de un archivo o carpeta.';
+  function renderBroadcastFiles() {
+    broadcastFiles.innerHTML = '';
+    broadcastFilesEmpty.classList.toggle('hidden', broadcastSelectedPaths.length > 0);
+
+    for (const p of broadcastSelectedPaths) {
+      const li = document.createElement('li');
+      li.className = 'broadcast-file-item';
+      li.innerHTML = `<span title="${escapeHtml(p)}">${escapeHtml(p)}</span>`;
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chip-remove';
+      removeBtn.title = 'Quitar';
+      removeBtn.textContent = '×';
+      removeBtn.addEventListener('click', () => {
+        broadcastSelectedPaths = broadcastSelectedPaths.filter((x) => x !== p);
+        renderBroadcastFiles();
+      });
+
+      li.appendChild(removeBtn);
+      broadcastFiles.appendChild(li);
+    }
+  }
+
+  function addBroadcastPaths(paths) {
+    for (const p of paths) {
+      if (p && !broadcastSelectedPaths.includes(p)) {
+        broadcastSelectedPaths.push(p);
+      }
+    }
+    renderBroadcastFiles();
+  }
+
+  async function selectBroadcastPaths() {
+    const result = await api.selectPaths();
+    if (result && result.success && result.paths.length > 0) {
+      addBroadcastPaths(result.paths);
+    }
+  }
+
+  function setupDragAndDrop() {
+    broadcastDropzone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      broadcastDropzone.classList.add('dragover');
+    });
+    broadcastDropzone.addEventListener('dragleave', () => {
+      broadcastDropzone.classList.remove('dragover');
+    });
+    broadcastDropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      broadcastDropzone.classList.remove('dragover');
+      const paths = [];
+      for (const file of e.dataTransfer.files) {
+        const p = api.getPathForFile(file);
+        if (p) {
+          paths.push(p);
+        }
+      }
+      addBroadcastPaths(paths);
+    });
+  }
+
+  async function sendBroadcast() {
+    if (broadcastSelectedPaths.length === 0) {
+      broadcastStatus.textContent = 'Selecciona al menos un archivo o carpeta.';
       broadcastStatus.className = 'muted error-text';
       return;
     }
 
+    const destination = broadcastDest.value.trim();
     broadcastStatus.textContent = 'Enviando a todos los estudiantes…';
     broadcastStatus.className = 'muted';
 
-    const result = await api.broadcastFile(localPath);
+    const result = await api.broadcastFile({ paths: broadcastSelectedPaths, destination });
     if (result && result.success) {
-      broadcastStatus.textContent = `Enviado: ${result.files} archivo(s) a ${result.students} estudiante(s).`;
+      broadcastStatus.textContent = `Enviado: ${result.files} archivo(s) a ${result.students} estudiante(s)${destination ? ` → ${destination}` : ''}.`;
       broadcastStatus.className = 'muted';
-      broadcastPath.value = '';
     } else {
-      broadcastStatus.textContent = result && result.error ? result.error : 'Error al enviar los archivos.';
+      broadcastStatus.textContent = result && result.error ? result.error : 'Error al enviar.';
       broadcastStatus.className = 'muted error-text';
     }
   }
@@ -711,6 +979,11 @@
 
     api.on('radar-status', (status) => {
       setRadarStatus(status.status, status.masterIp, status.masterPort);
+      if (status.status === 'connected') {
+        startBackgroundCapture();
+      } else {
+        stopBackgroundCapture();
+      }
     });
 
     api.on('student-list-update', (list) => {
@@ -796,14 +1069,19 @@
     dnsInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') addDnsDomain();
     });
-    btnBroadcast.addEventListener('click', broadcastFileToStudents);
-    broadcastPath.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') broadcastFileToStudents();
-    });
     btnTeacherSendChat.addEventListener('click', () => sendChatFrom(teacherChatInput));
     teacherChatInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') sendChatFrom(teacherChatInput);
     });
+
+    // Pestañas del Maestro
+    tabStudents.addEventListener('click', () => switchTeacherTab('students'));
+    tabBroadcast.addEventListener('click', () => switchTeacherTab('broadcast'));
+
+    // Difusión masiva
+    btnSelectPaths.addEventListener('click', selectBroadcastPaths);
+    btnBroadcastSend.addEventListener('click', sendBroadcast);
+    setupDragAndDrop();
 
     // Visualización en vivo
     btnCloseLive.addEventListener('click', closeLiveView);
@@ -814,6 +1092,8 @@
     btnFilesUp.addEventListener('click', () => listRemoteDirectory(parentPath(fileManager.currentPath)));
     btnFilesSave.addEventListener('click', saveRemoteFile);
     btnFilesCloseEditor.addEventListener('click', closeFileEditor);
+    btnFilesUpload.addEventListener('click', () => uploadFileInput.click());
+    uploadFileInput.addEventListener('change', handleUploadFile);
   }
 
   async function submitLogin() {
